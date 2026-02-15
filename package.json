@@ -11,7 +11,7 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "check": "tsc --noEmit",
-    "smoke": "node -e \"fetch('http://127.0.0.1:'+(process.env.API_PORT||3000)+'/healthz').then(r=>r.text()).then(t=>{console.log(t);process.exit(0)}).catch(e=>{console.error(e);process.exit(1)})\""
+    "smoke": "node -e \"fetch('http://127.0.0.1:'+(process.env.PORT||3030)+'/healthz').then(r=>r.text()).then(t=>{console.log(t);process.exit(0)}).catch(e=>{console.error(e);process.exit(1)})\""
   },
   "dependencies": {
     "dotenv": "^16.4.5",

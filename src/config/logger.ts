@@ -11,7 +11,17 @@ export const logger = pino({
           options: { colorize: true }
         },
   redact: {
-    paths: ['req.headers.authorization', '*.password', 'password'],
+    paths: [
+      'req.headers.authorization',
+      'req.headers.x-api-secret',
+      'req.body.password',
+      'req.body.apiSecret',
+      '*.password',
+      '*.apiSecret',
+      'API_SECRET',
+      'TS3_PASSWORD',
+      'password'
+    ],
     censor: '[REDACTED]'
   }
 });

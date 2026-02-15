@@ -9,6 +9,8 @@ export class TS3Client {
   private reconnectTimer?: NodeJS.Timeout;
   private subscribed = false;
   private connecting = false;
+  private connected = false;
+  private hasConnectedOnce = false;
 
   constructor(private readonly bus: EventBus, private readonly metrics: Metrics) {}
 
@@ -24,11 +26,14 @@ export class TS3Client {
         password: env.TS3_PASSWORD,
         nickname: env.TS3_NICKNAME
       });
+      this.connected = true;
+      this.hasConnectedOnce = true;
       this.subscribed = false;
       await this.ensureSubscriptions();
       this.attachConnectionHandlers();
       logger.info('Connected to TeamSpeak ServerQuery');
     } catch (error) {
+      this.connected = false;
       this.scheduleReconnect(error);
     } finally {
       this.connecting = false;
@@ -39,7 +44,10 @@ export class TS3Client {
     if (!this.ts3) return;
     this.ts3.removeAllListeners('close');
     this.ts3.removeAllListeners('flooding');
-    this.ts3.on('close', () => this.scheduleReconnect(new Error('ts3 connection closed')));
+    this.ts3.on('close', () => {
+      this.connected = false;
+      this.scheduleReconnect(new Error('ts3 connection closed'));
+    });
     this.ts3.on('flooding', () => logger.warn('TS3 flooding warning'));
   }
 
@@ -51,7 +59,7 @@ export class TS3Client {
     this.reconnectTimer = setInterval(async () => {
       try {
         await this.connect();
-        if (this.ts3) {
+        if (this.ts3 && this.connected) {
           clearInterval(this.reconnectTimer);
           this.reconnectTimer = undefined;
         }
@@ -93,7 +101,11 @@ export class TS3Client {
   }
 
   isReady(): boolean {
-    return Boolean(this.ts3);
+    return this.connected;
+  }
+
+  hadSuccessfulConnect(): boolean {
+    return this.hasConnectedOnce;
   }
 
   async createChannel(input: { name: string; parentId: string; password?: string; topic?: string; description?: string }): Promise<string> {

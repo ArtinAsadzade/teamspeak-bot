@@ -5,8 +5,8 @@ import { EventBus } from './core/eventBus';
 import { LeaderElection } from './core/leaderElection';
 import { Metrics } from './core/metrics';
 import { createStore } from './core/store';
-import { ModerationService } from './features/moderation/service';
 import { BlacklistService } from './features/moderation/blacklist';
+import { ModerationService } from './features/moderation/service';
 import { TempChannelService } from './features/tempChannels/service';
 import { TicketService } from './features/tickets/service';
 import { Scheduler } from './jobs/scheduler';
@@ -43,11 +43,27 @@ async function bootstrap(): Promise<void> {
     blacklist,
     metrics,
     leader,
-    health: () => ({ ready: ts3.isReady(), leader: leader.isLeader() })
+    health: () => ({ ok: true }),
+    readiness: async () => {
+      let redis = false;
+      try {
+        redis = (await store.ping()) === 'PONG';
+      } catch {
+        redis = false;
+      }
+      const ts3Connected = ts3.isReady() || ts3.hadSuccessfulConnect();
+      const leaderKnown = leader.status().isLeader;
+      return {
+        ready: redis && ts3Connected,
+        redis,
+        ts3: ts3Connected,
+        leader: leaderKnown
+      };
+    }
   });
 
-  await app.listen({ host: '0.0.0.0', port: env.API_PORT });
-  logger.info({ port: env.API_PORT }, 'API server started');
+  await app.listen({ host: '0.0.0.0', port: env.PORT });
+  logger.info({ port: env.PORT }, 'API server started');
 
   process.on('SIGTERM', async () => {
     scheduler.stop();

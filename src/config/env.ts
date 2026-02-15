@@ -5,7 +5,7 @@ dotenv.config();
 
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  API_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  PORT: z.coerce.number().int().min(1).max(65535).default(3030),
   TS3_HOST: z.string().min(1),
   TS3_QUERY_PORT: z.coerce.number().int().min(1).max(65535).default(10011),
   TS3_SERVER_PORT: z.coerce.number().int().min(1).max(65535).default(9987),
@@ -32,6 +32,11 @@ const schema = z.object({
 const parsed = schema.safeParse(process.env);
 if (!parsed.success) {
   console.error('Invalid environment configuration', parsed.error.flatten().fieldErrors);
+  process.exit(1);
+}
+
+if (parsed.data.NODE_ENV === 'production' && parsed.data.REDIS_FALLBACK_INMEMORY === 'true') {
+  console.error('REDIS_FALLBACK_INMEMORY=true is not allowed in production');
   process.exit(1);
 }
 
