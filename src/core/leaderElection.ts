@@ -27,4 +27,8 @@ export class LeaderElection {
   isLeader(): boolean {
     return this.isLeaderNow;
   }
+
+  status(): { isLeader: boolean; nodeId: string } {
+    return { isLeader: this.isLeaderNow, nodeId: this.id };
+  }
 }

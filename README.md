@@ -9,11 +9,11 @@
 - Ticket flow برای Support Lobby + auto move + staff notification
 - Leader election با Redis lock برای HA (active/standby)
 - API امن با `x-api-secret`
-- JSON logging با pino
-- endpointهای `/healthz` و `/metrics`
+- JSON logging با redaction برای secrets
+- endpointهای `/healthz` و `/readyz`
 - Dockerized (multi-stage + non-root + healthcheck)
 
-## نصب و اجرا
+## نصب و اجرا (Production)
 1. فایل `.env.example` را به `.env` کپی و مقادیر را تنظیم کنید.
 2. اجرا:
 
@@ -24,26 +24,32 @@ docker compose up -d --build
 3. سلامت سرویس:
 
 ```bash
-curl http://localhost:3000/healthz
+curl http://localhost:3030/healthz
+curl http://localhost:3030/readyz
 ```
 
 ## امنیت API
-تمام endpointهای نسخه‌بندی‌شده نیازمند header زیر هستند:
+تمام endpointهای `/v1/*` و `/metrics` نیازمند header زیر هستند:
 
 - `x-api-secret: <API_SECRET>`
 
-## مثال curl (ساخت کانال موقت)
+فقط endpointهای `GET /healthz` و `GET /readyz` بدون secret در دسترس هستند.
+
+## مثال curl
 
 ```bash
-curl -X POST http://localhost:3000/v1/temp-channels \
+curl -X POST http://localhost:3030/v1/temp-channels \
   -H 'content-type: application/json' \
   -H 'x-api-secret: REPLACE_ME' \
   -d '{"ownerKey":"user-123","name":"Gaming Room","password":"optional"}'
+
+curl -H 'x-api-secret: REPLACE_ME' http://localhost:3030/metrics
 ```
 
 ## Endpointها
 - `GET /healthz`
-- `GET /metrics`
+- `GET /readyz`
+- `GET /metrics` (requires `x-api-secret`)
 - `POST /v1/temp-channels`
 - `GET /v1/temp-channels`
 - `POST /v1/temp-channels/cleanup`
@@ -62,3 +68,15 @@ npm run dev
 ```bash
 npm run smoke
 ```
+
+## Production Checklist
+- ✅ `PORT=3030` تنظیم شده و docker mapping برابر `3030:3030` است.
+- ✅ Redis داخل `docker-compose.yml` بالا می‌آید و `REDIS_URL=redis://redis:6379` ست شده است.
+- ✅ `GET /healthz` همیشه 200 می‌دهد؛ `GET /readyz` فقط با readiness واقعی (Redis + TS3 status) 200 می‌دهد.
+- ✅ Leader election observable است (وضعیت leader در `readyz` گزارش می‌شود).
+- ✅ Auto-cleanup بعد از restart با state مبتنی بر Redis برقرار است.
+- ✅ Rate limit و max active channel فعال هستند.
+- ✅ Blacklist normalize robust فعال است.
+- ✅ Docker non-root + restart policy `unless-stopped` اعمال شده است.
+- ✅ Secrets redaction در logs برای `x-api-secret`، پسوردها و body حساس فعال است.
+- ✅ مثال‌های curl برای endpointها روی `localhost:3030` به‌روز شده‌اند.

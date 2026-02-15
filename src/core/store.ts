@@ -19,6 +19,7 @@ export interface KVStore {
   lpush(key: string, value: string): Promise<void>;
   ltrim(key: string, start: number, stop: number): Promise<void>;
   lrange(key: string, start: number, stop: number): Promise<string[]>;
+  ping(): Promise<string>;
 }
 
 class InMemoryStore implements KVStore {
@@ -100,6 +101,9 @@ class InMemoryStore implements KVStore {
     const list = this.lists.get(key) ?? [];
     return list.slice(start, stop + 1);
   }
+  async ping(): Promise<string> {
+    return 'PONG';
+  }
 }
 
 class RedisStore implements KVStore {
@@ -121,6 +125,7 @@ class RedisStore implements KVStore {
   async lpush(key: string, value: string) { await this.redis.lpush(key, value); }
   async ltrim(key: string, start: number, stop: number) { await this.redis.ltrim(key, start, stop); }
   async lrange(key: string, start: number, stop: number) { return this.redis.lrange(key, start, stop); }
+  async ping(): Promise<string> { return this.redis.ping(); }
 }
 
 export async function createStore(): Promise<KVStore> {
@@ -134,8 +139,8 @@ export async function createStore(): Promise<KVStore> {
     logger.info('Redis connected');
     return new RedisStore(redis);
   } catch (error) {
-    if (env.REDIS_FALLBACK_INMEMORY === 'true') {
-      logger.warn({ err: error }, 'Redis unavailable, fallback to in-memory store');
+    if (env.REDIS_FALLBACK_INMEMORY === 'true' && env.NODE_ENV !== 'production') {
+      logger.warn({ err: error }, 'Redis unavailable, fallback to in-memory store (non-production only)');
       return new InMemoryStore();
     }
     throw error;

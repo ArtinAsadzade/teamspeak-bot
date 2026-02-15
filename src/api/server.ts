@@ -14,7 +14,8 @@ export interface ApiDeps {
   blacklist: BlacklistService;
   metrics: Metrics;
   leader: LeaderElection;
-  health: () => { ready: boolean; leader: boolean };
+  health: () => { ok: boolean };
+  readiness: () => Promise<{ ready: boolean; redis: boolean; ts3: boolean; leader: boolean }>;
 }
 
 const createSchema = z.object({
@@ -35,13 +36,23 @@ function checkSecret(request: FastifyRequest): boolean {
 export async function buildApiServer(deps: ApiDeps) {
   const app = Fastify({ loggerInstance: logger });
 
-  app.get('/healthz', async () => ({ status: 'ok', ...deps.health() }));
-  app.get('/metrics', async (_, reply) => reply.type('text/plain').send(deps.metrics.renderPrometheus()));
-
   app.addHook('preHandler', async (req, reply) => {
-    if (req.url.startsWith('/healthz') || req.url.startsWith('/metrics')) return;
+    const publicPath = req.url.startsWith('/healthz') || req.url.startsWith('/readyz');
+    if (publicPath) return;
+
+    const protectedPath = req.url.startsWith('/v1/') || req.url.startsWith('/metrics');
+    if (!protectedPath) return;
+
     if (!checkSecret(req)) return unauthorized(reply);
   });
+
+  app.get('/healthz', async () => ({ status: 'ok', ...deps.health() }));
+  app.get('/readyz', async (_, reply) => {
+    const state = await deps.readiness();
+    if (!state.ready) return reply.status(503).send({ status: 'not-ready', ...state });
+    return { status: 'ready', ...state };
+  });
+  app.get('/metrics', async (_, reply) => reply.type('text/plain').send(deps.metrics.renderPrometheus()));
 
   app.post('/v1/temp-channels', async (req, reply) => {
     if (!deps.leader.isLeader()) return reply.status(409).send({ error: 'standby node' });
