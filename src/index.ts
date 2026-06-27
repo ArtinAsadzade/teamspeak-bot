@@ -40,6 +40,10 @@ async function bootstrap(): Promise<void> {
   scheduler.everyTick('leader-election', async () => {
     await leader.tick();
   });
+  scheduler.everyTick('support-lobby-ticket-scan', async () => {
+    if (!leader.isLeader()) return;
+    await tickets.processWaitingLobbyClients(() => leader.isLeader());
+  });
   scheduler.everyTick('cleanup-empty-channels', async () => {
     if (!leader.isLeader()) return;
     await tempChannels.cleanupEmptyChannels();

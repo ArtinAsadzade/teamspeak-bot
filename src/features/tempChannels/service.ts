@@ -127,6 +127,10 @@ export class TempChannelService {
     return removed;
   }
 
+  async getActiveChannelForOwner(ownerKey: string): Promise<string | null> {
+    return this.store.get(this.ownerKey(ownerKey));
+  }
+
   async attachTicketChannel(ownerKey: string, channelId: string): Promise<void> {
     const rec: TempChannelRecord = { channelId, ownerKey, createdAt: Date.now(), lastEmptyAt: 0, kind: 'ticket' };
     await this.store.set(this.ownerKey(ownerKey), channelId);
