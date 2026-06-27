@@ -15,7 +15,7 @@ const schema = z.object({
   TS3_PARENT_CHANNEL_ID: z.string().min(1),
   SUPPORT_LOBBY_CHANNEL_ID: z.string().min(1),
   SUPPORT_PARENT_CHANNEL_ID: z.string().min(1),
-  STAFF_NOTIFY_TARGET_MODE: z.enum(['server', 'channel']).default('server'),
+  STAFF_NOTIFY_TARGET_MODE: z.enum(['server', 'channel', 'client']).default('server'),
   STAFF_NOTIFY_TARGET: z.string().min(1).default('1'),
   API_SECRET: z.string().min(16),
   REDIS_URL: z.string().url().default('redis://redis:6379'),
