@@ -1,10 +1,12 @@
-version: '3.9'
+version: "3.9"
+
 services:
   redis:
     image: redis:7-alpine
+    container_name: teamspeak-bot-redis
     restart: unless-stopped
     healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -16,24 +18,19 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: teamspeak-bot
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      PORT: ${PORT:-3030}
-      REDIS_URL: redis://redis:6379
       NODE_ENV: production
+      PORT: 3030
+      REDIS_URL: redis://redis:6379
     depends_on:
       redis:
         condition: service_healthy
     ports:
-      - '${PORT:-3030}:3030'
-    healthcheck:
-      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3030/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 20s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+      - "3030:3030"
     networks:
       - appnet
 
