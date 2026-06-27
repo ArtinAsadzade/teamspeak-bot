@@ -10,8 +10,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "check": "tsc --noEmit",
-    "smoke": "node -e \"fetch('http://127.0.0.1:'+(process.env.PORT||3030)+'/healthz').then(r=>r.text()).then(t=>{console.log(t);process.exit(0)}).catch(e=>{console.error(e);process.exit(1)})\""
+    "smoke": "node -e \"fetch('http://127.0.0.1:'+(process.env.PORT||3030)+'/healthz').then(r=>r.text()).then(t=>{console.log(t);process.exit(0)}).catch(e=>{console.error(e);process.exit(1)})\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
@@ -19,7 +19,7 @@
     "ioredis": "^5.4.1",
     "pino": "^9.3.2",
     "pino-pretty": "^11.2.2",
-    "ts3-nodejs-library": "^3.7.3",
+    "ts3-nodejs-library": "^3.5.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {
