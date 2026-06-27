@@ -1,24 +1,29 @@
 FROM node:20-alpine AS builder
+
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package*.json ./
+
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 COPY tsconfig.json ./
 COPY src ./src
-RUN npm run build
-RUN npm prune --omit=dev
 
-FROM node:20-alpine AS runner
+RUN npm run build
+
+
+FROM node:20-alpine AS runtime
+
 WORKDIR /app
+
 ENV NODE_ENV=production
 
-RUN addgroup -S bot && adduser -S bot -G bot
+COPY package*.json ./
 
-COPY --from=builder --chown=bot:bot /app/package.json ./package.json
-COPY --from=builder --chown=bot:bot /app/node_modules ./node_modules
-COPY --from=builder --chown=bot:bot /app/dist ./dist
+RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
 
-USER bot
+COPY --from=builder /app/dist ./dist
+
 EXPOSE 3030
-CMD ["node", "dist/index.js"]
+
+CMD ["npm", "start"]
