@@ -1,4 +1,4 @@
-import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { env } from '../config/env';
 import { logger } from '../config/logger';
@@ -33,7 +33,7 @@ function checkSecret(request: FastifyRequest): boolean {
   return typeof secret === 'string' && secret === env.API_SECRET;
 }
 
-export async function buildApiServer(deps: ApiDeps): Promise<FastifyInstance> {
+export async function buildApiServer(deps: ApiDeps) {
   const app = Fastify({ logger });
 
   app.addHook('preHandler', async (req, reply) => {

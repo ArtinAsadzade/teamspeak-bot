@@ -1,4 +1,4 @@
-import { TeamSpeak, TextMessageTargetMode } from 'ts3-nodejs-library';
+import { TeamSpeak, TeamSpeakChannel, TeamSpeakClient as TeamSpeakQueryClient, TextMessageTargetMode } from 'ts3-nodejs-library';
 import { env } from '../config/env';
 import { logger } from '../config/logger';
 import { EventBus } from '../core/eventBus';
@@ -140,8 +140,23 @@ export class TS3Client {
 
   async sendStaffNotification(message: string): Promise<void> {
     if (!this.ts3) return;
-    const mode = env.STAFF_NOTIFY_TARGET_MODE === 'channel' ? TextMessageTargetMode.CHANNEL : TextMessageTargetMode.SERVER;
-    const target = mode === TextMessageTargetMode.SERVER ? '0' : env.STAFF_NOTIFY_TARGET;
-    await this.ts3.sendTextMessage(target, mode, message);
+
+    switch (env.STAFF_NOTIFY_TARGET_MODE) {
+      case 'server':
+        await this.ts3.sendTextMessage('0', TextMessageTargetMode.SERVER, message);
+        return;
+      case 'channel': {
+        const channel = await this.ts3.getChannelById(env.STAFF_NOTIFY_TARGET);
+        if (!channel) throw new Error(`TS3 staff notification channel not found: ${env.STAFF_NOTIFY_TARGET}`);
+        await this.ts3.sendTextMessage(channel as TeamSpeakChannel.ChannelType, TextMessageTargetMode.CHANNEL, message);
+        return;
+      }
+      case 'client': {
+        const client = await this.ts3.getClientById(env.STAFF_NOTIFY_TARGET);
+        if (!client) throw new Error(`TS3 staff notification client not found: ${env.STAFF_NOTIFY_TARGET}`);
+        await this.ts3.sendTextMessage(client as TeamSpeakQueryClient.ClientType, TextMessageTargetMode.CLIENT, message);
+        return;
+      }
+    }
   }
 }
