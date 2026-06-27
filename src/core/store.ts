@@ -7,6 +7,7 @@ type Primitive = string | null;
 export interface KVStore {
   get(key: string): Promise<Primitive>;
   set(key: string, value: string, ttlSec?: number): Promise<void>;
+  setIfNotExists(key: string, value: string, ttlSec: number): Promise<boolean>;
   del(...keys: string[]): Promise<number>;
   exists(key: string): Promise<boolean>;
   incr(key: string): Promise<number>;
@@ -47,6 +48,12 @@ class InMemoryStore implements KVStore {
   async set(key: string, value: string, ttlSec?: number): Promise<void> {
     this.data.set(key, value);
     if (ttlSec) this.expiries.set(key, Date.now() + ttlSec * 1000);
+  }
+  async setIfNotExists(key: string, value: string, ttlSec: number): Promise<boolean> {
+    this.cleanup(key);
+    if (await this.exists(key)) return false;
+    await this.set(key, value, ttlSec);
+    return true;
   }
   async del(...keys: string[]): Promise<number> {
     let n = 0;
@@ -112,6 +119,9 @@ class RedisStore implements KVStore {
   async set(key: string, value: string, ttlSec?: number) {
     if (ttlSec) await this.redis.set(key, value, 'EX', ttlSec);
     else await this.redis.set(key, value);
+  }
+  async setIfNotExists(key: string, value: string, ttlSec: number) {
+    return (await this.redis.set(key, value, 'EX', ttlSec, 'NX')) === 'OK';
   }
   async del(...keys: string[]) { return this.redis.del(...keys); }
   async exists(key: string) { return (await this.redis.exists(key)) === 1; }
