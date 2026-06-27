@@ -71,7 +71,7 @@ export class TS3Client {
 
   private async ensureSubscriptions(): Promise<void> {
     if (!this.ts3 || this.subscribed) return;
-    await this.ts3.registerEvent('server', 0);
+    await this.ts3.registerEvent('server');
     this.ts3.removeAllListeners('clientmoved');
     this.ts3.removeAllListeners('clientconnect');
     this.ts3.removeAllListeners('clientdisconnect');
@@ -110,21 +110,20 @@ export class TS3Client {
 
   async createChannel(input: { name: string; parentId: string; password?: string; topic?: string; description?: string }): Promise<string> {
     if (!this.ts3) throw new Error('TS3 client not connected');
-    const created = await this.ts3.channelCreate({
-      channel_name: input.name,
-      cpid: Number(input.parentId),
-      channel_topic: input.topic,
-      channel_description: input.description,
-      channel_flag_permanent: 0,
-      channel_flag_semi_permanent: 1,
-      channel_password: input.password
+    const created = await this.ts3.channelCreate(input.name, {
+      cpid: input.parentId,
+      channelTopic: input.topic,
+      channelDescription: input.description,
+      channelFlagPermanent: false,
+      channelFlagSemiPermanent: true,
+      channelPassword: input.password
     });
-    return String((created as any).cid);
+    return String(created.cid);
   }
 
   async deleteChannel(channelId: string): Promise<void> {
     if (!this.ts3) throw new Error('TS3 client not connected');
-    await this.ts3.channelDel(Number(channelId), true);
+    await this.ts3.channelDelete(channelId, true);
   }
 
   async getChannelClientCount(channelId: string): Promise<number> {
@@ -136,12 +135,13 @@ export class TS3Client {
 
   async moveClient(clientId: string, channelId: string): Promise<void> {
     if (!this.ts3) throw new Error('TS3 client not connected');
-    await this.ts3.clientMove(clientId, Number(channelId));
+    await this.ts3.clientMove(clientId, channelId);
   }
 
   async sendStaffNotification(message: string): Promise<void> {
     if (!this.ts3) return;
     const mode = env.STAFF_NOTIFY_TARGET_MODE === 'channel' ? TextMessageTargetMode.CHANNEL : TextMessageTargetMode.SERVER;
-    await this.ts3.sendTextMessage(mode, env.STAFF_NOTIFY_TARGET, message);
+    const target = mode === TextMessageTargetMode.SERVER ? '0' : env.STAFF_NOTIFY_TARGET;
+    await this.ts3.sendTextMessage(target, mode, message);
   }
 }
