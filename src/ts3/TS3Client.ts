@@ -15,6 +15,14 @@ const firstString = (...values: unknown[]): string => {
   return '';
 };
 
+
+const getTeamSpeakErrorId = (error: unknown): string => {
+  const err = error as any;
+  return firstString(err?.id, err?.error?.id, err?.response?.id, err?.data?.id, err?.message?.match?.(/(?:^|\D)(\d{3,5})(?:\D|$)/)?.[1]);
+};
+
+const isInvalidChannelIdError = (error: unknown): boolean => getTeamSpeakErrorId(error) === '768';
+
 const logRawEvent = (event: unknown, message: string): void => {
   if (typeof logger.debug === 'function') logger.debug({ event }, message);
   else logger.info({ event }, message);
@@ -244,7 +252,31 @@ export class TS3Client {
 
   async getChannelInfo(channelId: string): Promise<ChannelInfo> {
     if (!this.ts3) throw new Error('TS3 client not connected');
-    return this.ts3.channelInfo(channelId);
+    try {
+      return await this.ts3.channelInfo(channelId);
+    } catch (error) {
+      if (!isInvalidChannelIdError(error)) throw error;
+      logger.warn({ err: error, channelId }, 'TeamSpeak channelInfo reported invalid channelID; checking channel list fallback');
+      const channels = await this.ts3.channelList();
+      const found = channels.find((channel: any) => String(channel.cid) === channelId);
+      if (!found) throw error;
+      return this.ts3.channelInfo(channelId);
+    }
+  }
+
+  async channelExists(channelId: string): Promise<boolean> {
+    if (!this.ts3) throw new Error('TS3 client not connected');
+    try {
+      await this.getChannelInfo(channelId);
+      return true;
+    } catch (error) {
+      if (isInvalidChannelIdError(error)) {
+        logger.warn({ err: error, channelId }, 'Managed channel is missing in TeamSpeak');
+        return false;
+      }
+      const channels = await this.ts3.channelList();
+      return channels.some((channel: any) => String(channel.cid) === channelId);
+    }
   }
 
   async deleteChannel(channelId: string): Promise<void> {

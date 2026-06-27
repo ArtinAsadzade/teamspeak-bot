@@ -98,7 +98,7 @@ export class TicketService {
       const channelId = await this.ts3.createTicketChannel({
         name,
         parentId: supportParentChannelId,
-        topic: '[TICKET_CH]',
+        topic: '[TICKET_CH] managed-by-bot',
         description: '[TICKET_CH] managed-by-bot'
       });
       await this.tempChannels.attachTicketChannel(ownerKey, channelId);
