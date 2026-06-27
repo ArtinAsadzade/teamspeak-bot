@@ -5,6 +5,8 @@ import { EventBus } from '../../core/eventBus';
 import { TempChannelService } from '../tempChannels/service';
 import { TS3Client } from '../../ts3/TS3Client';
 
+const normalizeId = (value: unknown): string => String(value ?? '').trim();
+
 const safe = (s?: string): string =>
   (s ?? 'user')
     .toLowerCase()
@@ -18,46 +20,97 @@ export class TicketService {
 
   init(isLeader: () => boolean): void {
     this.bus.on('clientmoved', async (event) => {
-      const targetChannelId = String(event.targetChannelId);
-      const supportLobbyChannelId = String(env.SUPPORT_LOBBY_CHANNEL_ID);
-      const leader = isLeader();
-      logger.info(
-        { event, targetChannelId, supportLobbyChannelId, isLeader: leader },
-        'TicketService received clientmoved event'
+      await this.handleClientMoved(event, isLeader, 'event');
+    });
+  }
+
+  async processWaitingLobbyClients(isLeader: () => boolean): Promise<void> {
+    const supportLobbyChannelId = normalizeId(env.SUPPORT_LOBBY_CHANNEL_ID);
+    if (!isLeader()) return;
+
+    const clients = await this.ts3.listClientsInChannel(supportLobbyChannelId);
+    logger.info({ supportLobbyChannelId, clients }, 'TicketService scanned support lobby for waiting clients');
+    for (const client of clients) {
+      await this.handleClientMoved(
+        {
+          clientId: client.clientId,
+          clientDbId: client.clientDbId,
+          targetChannelId: client.channelId,
+          nickname: client.nickname
+        },
+        isLeader,
+        'lobby-scan'
       );
-      if (!leader) {
-        logger.info(
-          { event, targetChannelId, supportLobbyChannelId, isLeader: leader },
-          'TicketService ignored clientmoved event because this node is not leader'
-        );
+    }
+  }
+
+  private async handleClientMoved(
+    event: { clientId: string; clientDbId: string; targetChannelId: string; invokerName?: string; nickname?: string },
+    isLeader: () => boolean,
+    source: 'event' | 'lobby-scan'
+  ): Promise<void> {
+    const targetChannelId = normalizeId(event.targetChannelId);
+    const supportLobbyChannelId = normalizeId(env.SUPPORT_LOBBY_CHANNEL_ID);
+    const supportParentChannelId = normalizeId(env.SUPPORT_PARENT_CHANNEL_ID);
+    const clientId = normalizeId(event.clientId);
+    const clientDbId = normalizeId(event.clientDbId || event.clientId);
+    const ownerKey = `ticket:${clientDbId || clientId}`;
+    const leader = isLeader();
+
+    logger.info(
+      { event, source, targetChannelId, supportLobbyChannelId, isLeader: leader },
+      'TicketService received clientmoved event'
+    );
+
+    if (!leader) {
+      logger.info(
+        { event, source, targetChannelId, supportLobbyChannelId, isLeader: leader },
+        'TicketService ignored clientmoved event because this node is not leader'
+      );
+      return;
+    }
+
+    if (targetChannelId !== supportLobbyChannelId) {
+      logger.info(
+        { event, source, targetChannelId, supportLobbyChannelId, isLeader: leader },
+        'TicketService ignored clientmoved event because target channel is not the support lobby'
+      );
+      return;
+    }
+
+    if (!clientId) {
+      logger.warn({ event, source }, 'TicketService cannot create ticket because clientId is missing');
+      return;
+    }
+
+    try {
+      const activeChannelId = await this.tempChannels.getActiveChannelForOwner(ownerKey);
+      if (activeChannelId && env.MAX_ACTIVE_CHANNELS_PER_OWNER <= 1) {
+        await this.ts3.moveClient(clientId, activeChannelId);
+        logger.info({ event, source, clientId, channelId: activeChannelId, ownerKey }, 'Moved client to existing active ticket channel');
         return;
       }
-      if (targetChannelId !== supportLobbyChannelId) {
-        logger.info(
-          { event, targetChannelId, supportLobbyChannelId, isLeader: leader },
-          'TicketService ignored clientmoved event because target channel is not the support lobby'
-        );
-        return;
-      }
+
       const shortId = randomUUID().split('-')[0];
       const name = `ticket-${safe(event.nickname)}-${shortId}`;
-      try {
-        const channelId = await this.ts3.createChannel({
-          name,
-          parentId: String(env.SUPPORT_PARENT_CHANNEL_ID),
-          topic: '[TICKET_CH]',
-          description: '[TICKET_CH] managed-by-bot'
-        });
-        await this.tempChannels.attachTicketChannel(`ticket:${String(event.clientDbId)}`, channelId);
-        await this.ts3.moveClient(String(event.clientId), channelId);
-        await this.ts3.sendStaffNotification(`New support ticket created: ${name}`);
-        logger.info(
-          { event, channelId, channelName: name, supportParentChannelId: String(env.SUPPORT_PARENT_CHANNEL_ID) },
-          'Ticket channel created and client moved successfully'
-        );
-      } catch (error) {
-        logger.error({ err: error, error, event, targetChannelId, supportLobbyChannelId }, 'Failed ticket flow');
-      }
-    });
+      const channelId = await this.ts3.createChannel({
+        name,
+        parentId: supportParentChannelId,
+        topic: '[TICKET_CH]',
+        description: '[TICKET_CH] managed-by-bot'
+      });
+      await this.tempChannels.attachTicketChannel(ownerKey, channelId);
+      await this.ts3.moveClient(clientId, channelId);
+      await this.ts3.sendStaffNotification(`New support ticket created: ${name}`);
+      logger.info(
+        { event, source, channelId, clientId, channelName: name, supportParentChannelId, ownerKey },
+        'Ticket channel created and client moved successfully'
+      );
+    } catch (error) {
+      logger.error(
+        { err: error, error, event, source, clientId, ownerKey, targetChannelId, supportLobbyChannelId, supportParentChannelId },
+        'Failed ticket flow with TeamSpeak error'
+      );
+    }
   }
 }

@@ -6,18 +6,46 @@ import { Metrics } from '../core/metrics';
 
 const firstString = (...values: unknown[]): string => {
   for (const value of values) {
-    if (value !== undefined && value !== null && value !== '') return String(value);
+    if (value !== undefined && value !== null) {
+      const normalized = String(value).trim();
+      if (normalized) return normalized;
+    }
   }
   return '';
 };
 
+const logRawEvent = (event: unknown, message: string): void => {
+  if (typeof logger.debug === 'function') logger.debug({ event }, message);
+  else logger.info({ event }, message);
+};
+
 const normalizeClientMovedEvent = (event: any) => ({
-  clientId: firstString(event.clid, event.clientId),
-  clientDbId: firstString(event.cldbid, event.client_database_id, event.clientDatabaseId),
-  targetChannelId: firstString(event.ctid, event.cid, event.channelId, event.clientTargetChannelId, event.client_channel_id),
-  invokerName: event.invokername,
-  nickname: firstString(event.client_nickname, event.nickname)
+  clientId: firstString(event?.client?.clid, event?.clid, event?.clientId),
+  clientDbId: firstString(
+    event?.client?.clientDatabaseId,
+    event?.client?.client_database_id,
+    event?.client?.cldbid,
+    event?.clientDatabaseId,
+    event?.client_database_id,
+    event?.cldbid
+  ),
+  targetChannelId: firstString(event?.channel?.cid, event?.client?.cid, event?.ctid, event?.cid),
+  invokerName: firstString(event?.invokername, event?.invokerName),
+  nickname: firstString(
+    event?.client?.clientNickname,
+    event?.client?.client_nickname,
+    event?.client?.nickname,
+    event?.client_nickname,
+    event?.nickname
+  )
 });
+
+export interface TS3ChannelClient {
+  clientId: string;
+  clientDbId: string;
+  nickname: string;
+  channelId: string;
+}
 
 export class TS3Client {
   private ts3?: TeamSpeak;
@@ -92,14 +120,18 @@ export class TS3Client {
     this.ts3.removeAllListeners('clientdisconnect');
 
     this.ts3.on('clientmoved', (event: any) => {
-      logger.info({ event }, 'Raw TS3 clientmoved event');
+      logRawEvent(event, 'Raw TS3 clientmoved event');
       const normalized = normalizeClientMovedEvent(event);
       logger.info(normalized, 'Normalized TS3 clientmoved event');
+      if (!normalized.clientId || !normalized.targetChannelId) {
+        logger.warn({ event, normalized }, 'Ignoring TS3 clientmoved event with missing normalized clientId or targetChannelId');
+        return;
+      }
       this.bus.emit('clientmoved', normalized);
     });
     this.ts3.on('clientconnect', async (event: any) => {
       logger.info({ event }, 'Raw TS3 clientconnect event');
-      const clientId = firstString(event.clid, event.clientId);
+      const clientId = firstString(event?.client?.clid, event.clid, event.clientId);
       let clientInfo: any;
       if (clientId) {
         try {
@@ -112,6 +144,9 @@ export class TS3Client {
       const normalized = {
         clientId,
         clientDbId: firstString(
+          event?.client?.clientDatabaseId,
+          event?.client?.client_database_id,
+          event?.client?.cldbid,
           event.cldbid,
           event.client_database_id,
           event.clientDatabaseId,
@@ -119,6 +154,8 @@ export class TS3Client {
           clientInfo?.client_database_id
         ),
         targetChannelId: firstString(
+          event?.channel?.cid,
+          event?.client?.cid,
           event.ctid,
           event.cid,
           event.channelId,
@@ -128,7 +165,7 @@ export class TS3Client {
           clientInfo?.channelId,
           clientInfo?.client_channel_id
         ),
-        nickname: firstString(event.client_nickname, event.nickname, clientInfo?.clientNickname, clientInfo?.client_nickname)
+        nickname: firstString(event?.client?.clientNickname, event?.client?.client_nickname, event?.client?.nickname, event.client_nickname, event.nickname, clientInfo?.clientNickname, clientInfo?.client_nickname)
       };
       logger.info({ ...normalized, clientInfo }, 'Normalized TS3 clientconnect event');
       this.bus.emit('clientconnect', {
@@ -137,6 +174,8 @@ export class TS3Client {
       });
       if (normalized.clientId && normalized.targetChannelId) {
         this.bus.emit('clientmoved', normalized);
+      } else {
+        logger.warn({ event, normalized }, 'Not emitting synthetic clientmoved from clientconnect because clientId or targetChannelId is missing');
       }
     });
     this.ts3.on('clientdisconnect', (event: any) => {
@@ -179,6 +218,21 @@ export class TS3Client {
     const channels = await this.ts3.channelList();
     const channel = channels.find((c: any) => String(c.cid) === channelId);
     return Number((channel as any)?.totalClients ?? (channel as any)?.total_clients ?? (channel as any)?.channel_total_clients ?? 0);
+  }
+
+  async listClientsInChannel(channelId: string): Promise<TS3ChannelClient[]> {
+    if (!this.ts3) throw new Error('TS3 client not connected');
+    const normalizedChannelId = firstString(channelId);
+    const source = typeof (this.ts3 as any).channelClientList === 'function'
+      ? await (this.ts3 as any).channelClientList(normalizedChannelId)
+      : await this.ts3.clientList({ cid: normalizedChannelId } as any);
+
+    return source.map((client: any) => ({
+      clientId: firstString(client.clid, client.clientId),
+      clientDbId: firstString(client.clientDatabaseId, client.client_database_id, client.cldbid),
+      nickname: firstString(client.clientNickname, client.client_nickname, client.nickname),
+      channelId: firstString(client.cid, client.channelId, client.client_channel_id, normalizedChannelId)
+    }));
   }
 
   async moveClient(clientId: string, channelId: string): Promise<void> {
