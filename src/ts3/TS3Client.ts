@@ -70,6 +70,7 @@ export class TS3Client {
         nickname: env.TS3_NICKNAME
       });
       this.connected = true;
+      logger.info({ host: env.TS3_HOST, queryPort: env.TS3_QUERY_PORT, serverPort: env.TS3_SERVER_PORT, nickname: env.TS3_NICKNAME }, 'TS3 connect/login/select server succeeded');
       this.hasConnectedOnce = true;
       this.subscribed = false;
       await this.ensureSubscriptions();
@@ -114,7 +115,9 @@ export class TS3Client {
 
   private async ensureSubscriptions(): Promise<void> {
     if (!this.ts3 || this.subscribed) return;
+    logger.debug('Registering TS3 server event subscription');
     await this.ts3.registerEvent('server');
+    logger.info('Registered TS3 server events');
     this.ts3.removeAllListeners('clientmoved');
     this.ts3.removeAllListeners('clientconnect');
     this.ts3.removeAllListeners('clientdisconnect');
@@ -122,7 +125,7 @@ export class TS3Client {
     this.ts3.on('clientmoved', (event: any) => {
       logRawEvent(event, 'Raw TS3 clientmoved event');
       const normalized = normalizeClientMovedEvent(event);
-      logger.info(normalized, 'Normalized TS3 clientmoved event');
+      logger.debug(normalized, 'Normalized TS3 clientmoved event');
       if (!normalized.clientId || !normalized.targetChannelId) {
         logger.warn({ event, normalized }, 'Ignoring TS3 clientmoved event with missing normalized clientId or targetChannelId');
         return;
@@ -130,7 +133,7 @@ export class TS3Client {
       this.bus.emit('clientmoved', normalized);
     });
     this.ts3.on('clientconnect', async (event: any) => {
-      logger.info({ event }, 'Raw TS3 clientconnect event');
+      logger.debug({ event }, 'Raw TS3 clientconnect event');
       const clientId = firstString(event?.client?.clid, event.clid, event.clientId);
       let clientInfo: any;
       if (clientId) {
@@ -167,7 +170,7 @@ export class TS3Client {
         ),
         nickname: firstString(event?.client?.clientNickname, event?.client?.client_nickname, event?.client?.nickname, event.client_nickname, event.nickname, clientInfo?.clientNickname, clientInfo?.client_nickname)
       };
-      logger.info({ ...normalized, clientInfo }, 'Normalized TS3 clientconnect event');
+      logger.debug({ ...normalized, clientInfo }, 'Normalized TS3 clientconnect event');
       this.bus.emit('clientconnect', {
         clientDbId: normalized.clientDbId,
         nickname: normalized.nickname
@@ -238,6 +241,11 @@ export class TS3Client {
   async moveClient(clientId: string, channelId: string): Promise<void> {
     if (!this.ts3) throw new Error('TS3 client not connected');
     await this.ts3.clientMove(clientId, channelId);
+  }
+
+  async sendClientMessage(clientId: string, message: string): Promise<void> {
+    if (!this.ts3) throw new Error('TS3 client not connected');
+    await this.ts3.sendTextMessage(clientId, TextMessageTargetMode.CLIENT, message);
   }
 
   async sendStaffNotification(message: string): Promise<void> {

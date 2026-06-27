@@ -25,22 +25,23 @@ export class TicketService {
   }
 
   async processWaitingLobbyClients(isLeader: () => boolean): Promise<void> {
-    const supportLobbyChannelId = normalizeId(env.SUPPORT_LOBBY_CHANNEL_ID);
     if (!isLeader()) return;
 
-    const clients = await this.ts3.listClientsInChannel(supportLobbyChannelId);
-    logger.info({ supportLobbyChannelId, clients }, 'TicketService scanned support lobby for waiting clients');
-    for (const client of clients) {
-      await this.handleClientMoved(
-        {
-          clientId: client.clientId,
-          clientDbId: client.clientDbId,
-          targetChannelId: client.channelId,
-          nickname: client.nickname
-        },
-        isLeader,
-        'lobby-scan'
-      );
+    for (const supportLobbyChannelId of env.SUPPORT_LOBBY_CHANNEL_IDS) {
+      const clients = await this.ts3.listClientsInChannel(supportLobbyChannelId);
+      logger.debug({ supportLobbyChannelId, clientCount: clients.length }, 'TicketService scanned support lobby for waiting clients');
+      for (const client of clients) {
+        await this.handleClientMoved(
+          {
+            clientId: client.clientId,
+            clientDbId: client.clientDbId,
+            targetChannelId: client.channelId,
+            nickname: client.nickname
+          },
+          isLeader,
+          'lobby-scan'
+        );
+      }
     }
   }
 
@@ -50,29 +51,29 @@ export class TicketService {
     source: 'event' | 'lobby-scan'
   ): Promise<void> {
     const targetChannelId = normalizeId(event.targetChannelId);
-    const supportLobbyChannelId = normalizeId(env.SUPPORT_LOBBY_CHANNEL_ID);
+    const supportLobbyChannelIds = env.SUPPORT_LOBBY_CHANNEL_IDS;
     const supportParentChannelId = normalizeId(env.SUPPORT_PARENT_CHANNEL_ID);
     const clientId = normalizeId(event.clientId);
     const clientDbId = normalizeId(event.clientDbId || event.clientId);
     const ownerKey = `ticket:${clientDbId || clientId}`;
     const leader = isLeader();
 
-    logger.info(
-      { event, source, targetChannelId, supportLobbyChannelId, isLeader: leader },
+    logger.debug(
+      { event, source, targetChannelId, supportLobbyChannelIds, isLeader: leader },
       'TicketService received clientmoved event'
     );
 
     if (!leader) {
-      logger.info(
-        { event, source, targetChannelId, supportLobbyChannelId, isLeader: leader },
+      logger.debug(
+        { event, source, targetChannelId, supportLobbyChannelIds, isLeader: leader },
         'TicketService ignored clientmoved event because this node is not leader'
       );
       return;
     }
 
-    if (targetChannelId !== supportLobbyChannelId) {
-      logger.info(
-        { event, source, targetChannelId, supportLobbyChannelId, isLeader: leader },
+    if (!env.SUPPORT_LOBBY_CHANNEL_ID_SET.has(targetChannelId)) {
+      logger.debug(
+        { event, source, targetChannelId, supportLobbyChannelIds, isLeader: leader },
         'TicketService ignored clientmoved event because target channel is not the support lobby'
       );
       return;
@@ -87,7 +88,7 @@ export class TicketService {
       const activeChannelId = await this.tempChannels.getActiveChannelForOwner(ownerKey);
       if (activeChannelId && env.MAX_ACTIVE_CHANNELS_PER_OWNER <= 1) {
         await this.ts3.moveClient(clientId, activeChannelId);
-        logger.info({ event, source, clientId, channelId: activeChannelId, ownerKey }, 'Moved client to existing active ticket channel');
+        logger.info({ event, source, clientId, channelId: activeChannelId, ownerKey }, 'Ticket channel reused and client moved');
         return;
       }
 
@@ -108,7 +109,7 @@ export class TicketService {
       );
     } catch (error) {
       logger.error(
-        { err: error, error, event, source, clientId, ownerKey, targetChannelId, supportLobbyChannelId, supportParentChannelId },
+        { err: error, error, event, source, clientId, ownerKey, targetChannelId, supportLobbyChannelIds, supportParentChannelId },
         'Failed ticket flow with TeamSpeak error'
       );
     }

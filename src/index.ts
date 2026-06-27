@@ -15,9 +15,13 @@ import { TS3Client } from './ts3/TS3Client';
 async function bootstrap(): Promise<void> {
   logger.info(
     {
-      supportLobbyChannelId: String(env.SUPPORT_LOBBY_CHANNEL_ID),
+      supportLobbyChannelIds: env.SUPPORT_LOBBY_CHANNEL_IDS,
+      tempLobbyChannelIds: env.TEMP_LOBBY_CHANNEL_IDS,
       supportParentChannelId: String(env.SUPPORT_PARENT_CHANNEL_ID),
-      ts3ParentChannelId: String(env.TS3_PARENT_CHANNEL_ID)
+      ts3ParentChannelId: String(env.TS3_PARENT_CHANNEL_ID),
+      staffNotifyTargetMode: env.STAFF_NOTIFY_TARGET_MODE,
+      maxActiveChannelsPerOwner: env.MAX_ACTIVE_CHANNELS_PER_OWNER,
+      emptyDeleteDelaySec: env.EMPTY_DELETE_DELAY_SEC
     },
     'Startup TeamSpeak channel configuration'
   );
@@ -29,12 +33,13 @@ async function bootstrap(): Promise<void> {
   const ts3 = new TS3Client(eventBus, metrics);
   await ts3.connect();
 
-  const tempChannels = new TempChannelService(store, ts3, blacklist, metrics);
+  const tempChannels = new TempChannelService(store, ts3, blacklist, metrics, eventBus);
   const moderation = new ModerationService(eventBus, store);
   moderation.init();
 
   const tickets = new TicketService(eventBus, tempChannels, ts3);
   tickets.init(() => leader.isLeader());
+  tempChannels.init(() => leader.isLeader());
 
   const scheduler = new Scheduler();
   scheduler.everyTick('leader-election', async () => {
@@ -43,6 +48,7 @@ async function bootstrap(): Promise<void> {
   scheduler.everyTick('support-lobby-ticket-scan', async () => {
     if (!leader.isLeader()) return;
     await tickets.processWaitingLobbyClients(() => leader.isLeader());
+    await tempChannels.processWaitingLobbyClients(() => leader.isLeader());
   });
   scheduler.everyTick('cleanup-empty-channels', async () => {
     if (!leader.isLeader()) return;
