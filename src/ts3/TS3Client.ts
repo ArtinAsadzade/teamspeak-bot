@@ -1,4 +1,5 @@
 import { TeamSpeak, TeamSpeakChannel, TeamSpeakClient as TeamSpeakQueryClient, TextMessageTargetMode } from 'ts3-nodejs-library';
+import type { ChannelInfo } from 'ts3-nodejs-library/lib/types/ResponseTypes';
 import { env } from '../config/env';
 import { logger } from '../config/logger';
 import { EventBus } from '../core/eventBus';
@@ -199,16 +200,51 @@ export class TS3Client {
   }
 
   async createChannel(input: { name: string; parentId: string; password?: string; topic?: string; description?: string }): Promise<string> {
+    return this.createTempChannel(input);
+  }
+
+  async createTempChannel(input: { name: string; parentId: string; password?: string; topic?: string; description?: string }): Promise<string> {
     if (!this.ts3) throw new Error('TS3 client not connected');
     const created = await this.ts3.channelCreate(input.name, {
       cpid: input.parentId,
       channelTopic: input.topic,
       channelDescription: input.description,
       channelFlagPermanent: false,
-      channelFlagSemiPermanent: true,
-      channelPassword: input.password
+      channelFlagSemiPermanent: true
     });
-    return String(created.cid);
+    const channelId = String(created.cid);
+    logger.info({ channelId, channelName: input.name }, 'Temp channel created');
+    if (input.password) await this.setChannelPassword(channelId, input.password);
+    const info = await this.getChannelInfo(channelId);
+    logger.info({ channelId, channelName: info?.channelName ?? input.name, channelFlagPassword: Boolean(info?.channelFlagPassword) }, 'Temp channel password status verified');
+    return channelId;
+  }
+
+  async createTicketChannel(input: { name: string; parentId: string; topic?: string; description?: string }): Promise<string> {
+    if (!this.ts3) throw new Error('TS3 client not connected');
+    const created = await this.ts3.channelCreate(input.name, {
+      cpid: input.parentId,
+      channelTopic: input.topic,
+      channelDescription: input.description,
+      channelFlagPermanent: false,
+      channelFlagSemiPermanent: true
+    });
+    const channelId = String(created.cid);
+    const info = await this.getChannelInfo(channelId);
+    logger.info({ channelId, channelName: info?.channelName ?? input.name, channelFlagPassword: Boolean(info?.channelFlagPassword) }, 'Ticket channel created and verified');
+    return channelId;
+  }
+
+  async setChannelPassword(channelId: string, password: string): Promise<void> {
+    if (!this.ts3) throw new Error('TS3 client not connected');
+    await this.ts3.channelEdit(channelId, { channelPassword: password });
+    const info = await this.getChannelInfo(channelId);
+    logger.info({ channelId, channelName: info?.channelName, channelFlagPassword: Boolean(info?.channelFlagPassword) }, 'Channel password applied and verified');
+  }
+
+  async getChannelInfo(channelId: string): Promise<ChannelInfo> {
+    if (!this.ts3) throw new Error('TS3 client not connected');
+    return this.ts3.channelInfo(channelId);
   }
 
   async deleteChannel(channelId: string): Promise<void> {
@@ -243,9 +279,13 @@ export class TS3Client {
     await this.ts3.clientMove(clientId, channelId);
   }
 
-  async sendClientMessage(clientId: string, message: string): Promise<void> {
+  async sendPrivateMessage(clientId: string, message: string): Promise<void> {
     if (!this.ts3) throw new Error('TS3 client not connected');
     await this.ts3.sendTextMessage(clientId, TextMessageTargetMode.CLIENT, message);
+  }
+
+  async sendClientMessage(clientId: string, message: string): Promise<void> {
+    await this.sendPrivateMessage(clientId, message);
   }
 
   async sendStaffNotification(message: string): Promise<void> {
