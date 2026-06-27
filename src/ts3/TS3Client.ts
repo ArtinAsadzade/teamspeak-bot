@@ -4,6 +4,21 @@ import { logger } from '../config/logger';
 import { EventBus } from '../core/eventBus';
 import { Metrics } from '../core/metrics';
 
+const firstString = (...values: unknown[]): string => {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== '') return String(value);
+  }
+  return '';
+};
+
+const normalizeClientMovedEvent = (event: any) => ({
+  clientId: firstString(event.clid, event.clientId),
+  clientDbId: firstString(event.cldbid, event.client_database_id, event.clientDatabaseId),
+  targetChannelId: firstString(event.ctid, event.cid, event.channelId, event.clientTargetChannelId, event.client_channel_id),
+  invokerName: event.invokername,
+  nickname: firstString(event.client_nickname, event.nickname)
+});
+
 export class TS3Client {
   private ts3?: TeamSpeak;
   private reconnectTimer?: NodeJS.Timeout;
@@ -77,24 +92,57 @@ export class TS3Client {
     this.ts3.removeAllListeners('clientdisconnect');
 
     this.ts3.on('clientmoved', (event: any) => {
-      this.bus.emit('clientmoved', {
-        clientId: String(event.clid),
-        clientDbId: String(event.client_database_id ?? event.cldbid ?? ''),
-        targetChannelId: String(event.ctid),
-        invokerName: event.invokername,
-        nickname: event.client_nickname
-      });
+      logger.info({ event }, 'Raw TS3 clientmoved event');
+      const normalized = normalizeClientMovedEvent(event);
+      logger.info(normalized, 'Normalized TS3 clientmoved event');
+      this.bus.emit('clientmoved', normalized);
     });
-    this.ts3.on('clientconnect', (event: any) => {
+    this.ts3.on('clientconnect', async (event: any) => {
+      logger.info({ event }, 'Raw TS3 clientconnect event');
+      const clientId = firstString(event.clid, event.clientId);
+      let clientInfo: any;
+      if (clientId) {
+        try {
+          const client = await this.ts3?.getClientById(clientId);
+          clientInfo = await client?.getInfo();
+        } catch (error) {
+          logger.error({ err: error, event, clientId }, 'Failed to fetch TS3 client info after clientconnect');
+        }
+      }
+      const normalized = {
+        clientId,
+        clientDbId: firstString(
+          event.cldbid,
+          event.client_database_id,
+          event.clientDatabaseId,
+          clientInfo?.clientDatabaseId,
+          clientInfo?.client_database_id
+        ),
+        targetChannelId: firstString(
+          event.ctid,
+          event.cid,
+          event.channelId,
+          event.clientTargetChannelId,
+          event.client_channel_id,
+          clientInfo?.cid,
+          clientInfo?.channelId,
+          clientInfo?.client_channel_id
+        ),
+        nickname: firstString(event.client_nickname, event.nickname, clientInfo?.clientNickname, clientInfo?.client_nickname)
+      };
+      logger.info({ ...normalized, clientInfo }, 'Normalized TS3 clientconnect event');
       this.bus.emit('clientconnect', {
-        clientDbId: String(event.client_database_id ?? event.cldbid ?? ''),
-        nickname: event.client_nickname
+        clientDbId: normalized.clientDbId,
+        nickname: normalized.nickname
       });
+      if (normalized.clientId && normalized.targetChannelId) {
+        this.bus.emit('clientmoved', normalized);
+      }
     });
     this.ts3.on('clientdisconnect', (event: any) => {
       this.bus.emit('clientdisconnect', {
-        clientDbId: String(event.client_database_id ?? event.cldbid ?? ''),
-        nickname: event.client_nickname
+        clientDbId: firstString(event.cldbid, event.client_database_id, event.clientDatabaseId),
+        nickname: firstString(event.client_nickname, event.nickname)
       });
     });
     this.subscribed = true;

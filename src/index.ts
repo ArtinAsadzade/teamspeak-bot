@@ -13,6 +13,14 @@ import { Scheduler } from './jobs/scheduler';
 import { TS3Client } from './ts3/TS3Client';
 
 async function bootstrap(): Promise<void> {
+  logger.info(
+    {
+      supportLobbyChannelId: String(env.SUPPORT_LOBBY_CHANNEL_ID),
+      supportParentChannelId: String(env.SUPPORT_PARENT_CHANNEL_ID),
+      ts3ParentChannelId: String(env.TS3_PARENT_CHANNEL_ID)
+    },
+    'Startup TeamSpeak channel configuration'
+  );
   const store = await createStore();
   const eventBus = new EventBus();
   const metrics = new Metrics();
