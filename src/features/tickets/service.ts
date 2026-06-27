@@ -88,13 +88,14 @@ export class TicketService {
       const activeChannelId = await this.tempChannels.getActiveChannelForOwner(ownerKey);
       if (activeChannelId && env.MAX_ACTIVE_CHANNELS_PER_OWNER <= 1) {
         await this.ts3.moveClient(clientId, activeChannelId);
-        logger.info({ event, source, clientId, channelId: activeChannelId, ownerKey }, 'Ticket channel reused and client moved');
+        await this.ts3.sendPrivateMessage(clientId, 'تیکت پشتیبانی شما ساخته شد ✅\nلطفاً همین‌جا منتظر بمانید تا پشتیبانی وارد شود.');
+        logger.info({ event, source, clientId, channelId: activeChannelId, ownerKey }, 'Ticket channel reused and Persian message sent');
         return;
       }
 
       const shortId = randomUUID().split('-')[0];
       const name = `ticket-${safe(event.nickname)}-${shortId}`;
-      const channelId = await this.ts3.createChannel({
+      const channelId = await this.ts3.createTicketChannel({
         name,
         parentId: supportParentChannelId,
         topic: '[TICKET_CH]',
@@ -102,7 +103,8 @@ export class TicketService {
       });
       await this.tempChannels.attachTicketChannel(ownerKey, channelId);
       await this.ts3.moveClient(clientId, channelId);
-      await this.ts3.sendStaffNotification(`New support ticket created: ${name}`);
+      await this.ts3.sendPrivateMessage(clientId, 'تیکت پشتیبانی شما ساخته شد ✅\nلطفاً همین‌جا منتظر بمانید تا پشتیبانی وارد شود.');
+      await this.ts3.sendStaffNotification(`تیکت جدید ساخته شد:\nکاربر: ${event.nickname ?? clientId}\nکانال: ${name}`);
       logger.info(
         { event, source, channelId, clientId, channelName: name, supportParentChannelId, ownerKey },
         'Ticket channel created and client moved successfully'

@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { EventBus } from '../../core/eventBus';
@@ -11,7 +10,7 @@ import { BlacklistService } from '../moderation/blacklist';
 const TMP_SET = 'tmp:channels';
 const normalizeId = (value: unknown): string => String(value ?? '').trim();
 const tempOwnerKey = (ownerId: string): string => `temp:${ownerId}`;
-const makePassword = (): string => randomBytes(6).toString('base64url');
+const makePassword = (): string => String(Math.floor(1000 + Math.random() * 9000));
 const roomName = (nickname?: string): string => sanitizeChannelName(`${nickname?.trim() || 'User'}'s room`, 40);
 
 export interface TempChannelRecord {
@@ -64,16 +63,32 @@ export class TempChannelService {
     try {
       const existing = await this.getActiveRecordForOwner(ownerKey);
       if (existing && env.MAX_ACTIVE_CHANNELS_PER_OWNER <= 1) {
-        await this.ts3.moveClient(clientId, existing.channelId);
-        await this.sendTempPassword(clientId, existing.channelId, existing.password);
-        logger.info({ event, source, clientId, channelId: existing.channelId, ownerKey }, 'Temp channel reused and client moved');
+        try {
+          await this.ts3.getChannelInfo(existing.channelId);
+        } catch (error) {
+          logger.warn({ err: error, error, channelId: existing.channelId, ownerKey }, 'Stored temp channel no longer exists; removing stale metadata');
+          await this.store.srem(TMP_SET, existing.channelId);
+          await this.store.del(this.channelKey(existing.channelId));
+          await this.store.del(this.ownerKey(ownerKey));
+        }
+      }
+      const freshExisting = await this.getActiveRecordForOwner(ownerKey);
+      if (freshExisting && env.MAX_ACTIVE_CHANNELS_PER_OWNER <= 1) {
+        await this.ts3.moveClient(clientId, freshExisting.channelId);
+        logger.info({ event, source, clientId, channelId: freshExisting.channelId, ownerKey }, 'Temp channel owner moved');
+        await this.sendTempPassword(clientId, freshExisting.channelId, freshExisting.password);
+        logger.info({ event, source, clientId, channelId: freshExisting.channelId, ownerKey }, 'Persian temp channel reuse message sent');
+        logger.info({ event, source, clientId, channelId: freshExisting.channelId, ownerKey }, 'Temp channel reused and client moved');
         return;
       }
       const password = makePassword();
       const channelName = roomName(event.nickname);
       const rec = await this.create(ownerKey, channelName, password);
       await this.ts3.moveClient(clientId, rec.channelId);
+      logger.info({ event, source, clientId, channelId: rec.channelId, ownerKey }, 'Temp channel owner moved');
+      await this.ts3.setChannelPassword(rec.channelId, password);
       await this.sendTempPassword(clientId, rec.channelId, password, channelName);
+      logger.info({ event, source, clientId, channelId: rec.channelId, ownerKey }, 'Persian temp channel creation message sent');
       logger.info({ event, source, clientId, channelId: rec.channelId, channelName, ownerKey }, 'Temp channel created and client moved');
     } catch (error) {
       logger.error({ err: error, error, event, source, clientId, ownerKey, targetChannelId }, 'Failed temp channel flow with TeamSpeak error');
@@ -82,7 +97,7 @@ export class TempChannelService {
 
   private async sendTempPassword(clientId: string, channelId: string, password?: string, channelName?: string): Promise<void> {
     if (!password) return;
-    await this.ts3.sendClientMessage(clientId, `Your temporary channel was created.\nChannel: ${channelName ?? channelId}\nPassword: ${password}`);
+    await this.ts3.sendPrivateMessage(clientId, `کانال موقت شما ساخته شد ✅\nنام کانال: ${channelName ?? channelId}\nرمز ورود: ${password}\n\nتا زمانی که داخل کانال باشید فعال می‌ماند.\nاگر کانال چند دقیقه خالی بماند، به‌صورت خودکار حذف می‌شود.`);
   }
 
   async create(ownerKey: string, rawName: string, password?: string): Promise<TempChannelRecord> {
@@ -94,7 +109,8 @@ export class TempChannelService {
     if (current > 1) { logger.warn({ ownerKey, rateKey }, 'Temp channel creation rate limited / spam detected'); throw new Error('Rate limit exceeded'); }
     const activeChannel = await this.store.get(this.ownerKey(ownerKey));
     if (activeChannel && env.MAX_ACTIVE_CHANNELS_PER_OWNER <= 1) { logger.info({ ownerKey, activeChannel }, 'Temp channel creation skipped because user already has active channel'); throw new Error('Owner already has active channel'); }
-    const channelId = await this.ts3.createChannel({ name, parentId: env.TS3_PARENT_CHANNEL_ID, password, topic: '[TEMP_CH]', description: '[TEMP_CH] managed-by-bot' });
+    if (password && !/^\d{4}$/.test(password)) throw new Error('Temporary channel password must be exactly 4 digits');
+    const channelId = await this.ts3.createTempChannel({ name, parentId: env.TS3_PARENT_CHANNEL_ID, topic: '[TEMP_CH] managed-by-bot', description: '[TEMP_CH] managed-by-bot' });
     const rec: TempChannelRecord = { channelId, ownerKey, createdAt: Date.now(), lastEmptyAt: 0, kind: 'temp', password };
     await this.store.set(this.ownerKey(ownerKey), channelId);
     await this.store.hset(this.channelKey(channelId), { ownerKey, channelId, password: password ?? '', createdAt: String(rec.createdAt), lastSeenAt: String(rec.createdAt), lastEmptyAt: '0', kind: rec.kind, type: rec.kind });
