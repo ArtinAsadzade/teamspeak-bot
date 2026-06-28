@@ -4,50 +4,16 @@ import { env } from '../config/env';
 import { logger } from '../config/logger';
 import { EventBus } from '../core/eventBus';
 import { Metrics } from '../core/metrics';
+import { normalizeClientMovedEvent, normalizeStringId } from './events';
 
-const firstString = (...values: unknown[]): string => {
-  for (const value of values) {
-    if (value !== undefined && value !== null) {
-      const normalized = String(value).trim();
-      if (normalized) return normalized;
-    }
-  }
-  return '';
-};
-
+const firstString = normalizeStringId;
 
 const getTeamSpeakErrorId = (error: unknown): string => {
-  const err = error as any;
+  const err = error as { id?: unknown; error?: { id?: unknown }; response?: { id?: unknown }; data?: { id?: unknown }; message?: string };
   return firstString(err?.id, err?.error?.id, err?.response?.id, err?.data?.id, err?.message?.match?.(/(?:^|\D)(\d{3,5})(?:\D|$)/)?.[1]);
 };
 
 const isInvalidChannelIdError = (error: unknown): boolean => getTeamSpeakErrorId(error) === '768';
-
-const logRawEvent = (event: unknown, message: string): void => {
-  if (typeof logger.debug === 'function') logger.debug({ event }, message);
-  else logger.info({ event }, message);
-};
-
-const normalizeClientMovedEvent = (event: any) => ({
-  clientId: firstString(event?.client?.clid, event?.clid, event?.clientId),
-  clientDbId: firstString(
-    event?.client?.clientDatabaseId,
-    event?.client?.client_database_id,
-    event?.client?.cldbid,
-    event?.clientDatabaseId,
-    event?.client_database_id,
-    event?.cldbid
-  ),
-  targetChannelId: firstString(event?.channel?.cid, event?.client?.cid, event?.ctid, event?.cid),
-  invokerName: firstString(event?.invokername, event?.invokerName),
-  nickname: firstString(
-    event?.client?.clientNickname,
-    event?.client?.client_nickname,
-    event?.client?.nickname,
-    event?.client_nickname,
-    event?.nickname
-  )
-});
 
 export interface TS3ChannelClient {
   clientId: string;
@@ -132,13 +98,10 @@ export class TS3Client {
     this.ts3.removeAllListeners('clientdisconnect');
 
     this.ts3.on('clientmoved', (event: any) => {
-      logRawEvent(event, 'Raw TS3 clientmoved event');
+      logger.debug({ event }, 'Raw TS3 clientmoved event');
       const normalized = normalizeClientMovedEvent(event);
+      if (!normalized) return;
       logger.debug(normalized, 'Normalized TS3 clientmoved event');
-      if (!normalized.clientId || !normalized.targetChannelId) {
-        logger.warn({ event, normalized }, 'Ignoring TS3 clientmoved event with missing normalized clientId or targetChannelId');
-        return;
-      }
       this.bus.emit('clientmoved', normalized);
     });
     this.ts3.on('clientconnect', async (event: any) => {
@@ -222,9 +185,8 @@ export class TS3Client {
     });
     const channelId = String(created.cid);
     logger.info({ channelId, channelName: input.name }, 'Temp channel created');
-    if (input.password) await this.setChannelPassword(channelId, input.password);
     const info = await this.getChannelInfo(channelId);
-    logger.info({ channelId, channelName: info?.channelName ?? input.name, channelFlagPassword: Boolean(info?.channelFlagPassword) }, 'Temp channel password status verified');
+    logger.info({ channelId, channelName: info?.channelName ?? input.name, channelFlagPassword: Boolean(info?.channelFlagPassword) }, 'Temp channel created and password status verified');
     return channelId;
   }
 
@@ -246,8 +208,13 @@ export class TS3Client {
   async setChannelPassword(channelId: string, password: string): Promise<void> {
     if (!this.ts3) throw new Error('TS3 client not connected');
     await this.ts3.channelEdit(channelId, { channelPassword: password });
+    await this.verifyChannelPasswordFlag(channelId);
+  }
+
+  async verifyChannelPasswordFlag(channelId: string): Promise<void> {
     const info = await this.getChannelInfo(channelId);
-    logger.info({ channelId, channelName: info?.channelName, channelFlagPassword: Boolean(info?.channelFlagPassword) }, 'Channel password applied and verified');
+    if (!info?.channelFlagPassword) throw new Error(`TeamSpeak did not report password flag for channel ${channelId}`);
+    logger.info({ channelId, channelName: info.channelName, channelFlagPassword: true }, 'Channel password flag verified');
   }
 
   async getChannelInfo(channelId: string): Promise<ChannelInfo> {

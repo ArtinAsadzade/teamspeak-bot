@@ -2,17 +2,18 @@ import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { EventBus } from '../../core/eventBus';
 import { Metrics } from '../../core/metrics';
+import { ManagedChannelRecord, ManagedChannelRepository } from '../../core/redis/managedChannelRepository';
 import { KVStore } from '../../core/store';
 import { TS3Client } from '../../ts3/TS3Client';
 import { sanitizeChannelName } from '../../utils/text';
+import { persianMessages } from '../messages/fa';
 import { BlacklistService } from '../moderation/blacklist';
 
-const TMP_SET = 'tmp:channels';
 const normalizeId = (value: unknown): string => String(value ?? '').trim();
-const tempOwnerKey = (ownerId: string): string => `temp:${ownerId}`;
-const makePassword = (): string => String(Math.floor(1000 + Math.random() * 9000));
+const TEMP_MARKER = '[TEMP_CH] managed-by-bot';
+export const selectOwnerKey = (clientDbId?: string, clientId?: string): string => normalizeId(clientDbId) || normalizeId(clientId);
+export const makeTempPassword = (): string => String(Math.floor(1000 + Math.random() * 9000));
 const roomName = (nickname?: string): string => sanitizeChannelName(`${nickname?.trim() || 'User'}'s room`, 40);
-const botMarker = (kind: 'temp' | 'ticket'): string => kind === 'temp' ? '[TEMP_CH] managed-by-bot' : '[TICKET_CH] managed-by-bot';
 
 export interface TempChannelRecord {
   channelId: string;
@@ -24,18 +25,20 @@ export interface TempChannelRecord {
 }
 
 export class TempChannelService {
+  private readonly repository: ManagedChannelRepository;
+
   constructor(
     private readonly store: KVStore,
     private readonly ts3: TS3Client,
     private readonly blacklist: BlacklistService,
     private readonly metrics: Metrics,
     private readonly bus?: EventBus
-  ) {}
+  ) {
+    this.repository = new ManagedChannelRepository(store);
+  }
 
-  private ownerKey(ownerKey: string) { return `tmp:owner:${ownerKey}`; }
-  private channelKey(channelId: string) { return `tmp:channel:${channelId}`; }
-  private rateKey(ownerKey: string) { return `tmp:rate:${ownerKey}`; }
-  private lockKey(ownerKey: string) { return `temp:lock:${ownerKey}`; }
+  private rateKey(ownerKey: string) { return `managed:rate:temp:${ownerKey}`; }
+  private lockKey(ownerKey: string) { return `managed:lock:temp:${ownerKey}`; }
 
   init(isLeader: () => boolean): void {
     this.bus?.on('clientmoved', async (event) => this.handleClientMoved(event, isLeader, 'event'));
@@ -45,142 +48,110 @@ export class TempChannelService {
     if (!isLeader()) return;
     for (const tempLobbyChannelId of env.TEMP_LOBBY_CHANNEL_IDS) {
       const clients = await this.ts3.listClientsInChannel(tempLobbyChannelId);
-      logger.debug({ tempLobbyChannelId, clientCount: clients.length }, 'TempChannelService scanned temp lobby for waiting clients');
-      for (const client of clients) {
-        await this.handleClientMoved({ clientId: client.clientId, clientDbId: client.clientDbId, targetChannelId: client.channelId, nickname: client.nickname }, isLeader, 'lobby-scan');
-      }
+      logger.debug({ tempLobbyChannelId, clientCount: clients.length }, 'Scanned temp lobby for waiting clients');
+      for (const client of clients) await this.handleClientMoved({ clientId: client.clientId, clientDbId: client.clientDbId, targetChannelId: client.channelId, nickname: client.nickname }, isLeader, 'lobby-scan');
     }
   }
 
   private async handleClientMoved(event: { clientId: string; clientDbId: string; targetChannelId: string; nickname?: string }, isLeader: () => boolean, source: 'event' | 'lobby-scan'): Promise<void> {
     const targetChannelId = normalizeId(event.targetChannelId);
     const clientId = normalizeId(event.clientId);
-    const clientDbId = normalizeId(event.clientDbId || event.clientId);
-    const ownerKey = tempOwnerKey(clientDbId || clientId);
-    const leader = isLeader();
-    logger.debug({ event, source, targetChannelId, tempLobbyChannelIds: env.TEMP_LOBBY_CHANNEL_IDS, isLeader: leader }, 'TempChannelService received movement event');
-    if (!leader) { logger.debug({ event, source }, 'TempChannelService ignored event because this node is not leader'); return; }
-    if (!env.TEMP_LOBBY_CHANNEL_ID_SET.has(targetChannelId)) { logger.debug({ event, source, targetChannelId }, 'TempChannelService ignored event because channel is not a temp lobby'); return; }
-    if (!clientId) { logger.warn({ event, source }, 'TempChannelService cannot create/reuse temp channel because clientId is missing'); return; }
+    const ownerKey = selectOwnerKey(event.clientDbId, clientId);
+    if (!isLeader() || !env.TEMP_LOBBY_CHANNEL_ID_SET.has(targetChannelId)) return;
+    if (!clientId || !ownerKey) { logger.warn({ event, source }, 'Temp flow ignored because client or owner id is missing'); return; }
 
     const locked = await this.store.setIfNotExists(this.lockKey(ownerKey), source, 5);
-    if (!locked) { logger.debug({ event, source, clientId, ownerKey }, 'TempChannelService skipped duplicate processing because owner lock is held'); return; }
+    if (!locked) { logger.debug({ source, clientId, ownerKey }, 'Temp flow skipped because owner lock is held'); return; }
 
     try {
-      let recoveredFromStaleMetadata = false;
-      const existing = await this.getActiveRecordForOwner(ownerKey);
+      const recovered = await this.removeStaleMetadata(ownerKey);
+      const existing = await this.repository.getByOwner('temp', ownerKey);
       if (existing && env.MAX_ACTIVE_CHANNELS_PER_OWNER <= 1) {
-        const exists = await this.ts3.channelExists(existing.channelId);
-        if (!exists) {
-          logger.warn({ channelId: existing.channelId, ownerKey }, 'Stored temp channel no longer exists; removing stale metadata and rate limit for immediate recovery');
-          await this.removeMetadata(existing.channelId, ownerKey);
-          await this.store.del(this.rateKey(ownerKey));
-          recoveredFromStaleMetadata = true;
-        }
-      }
-      const freshExisting = await this.getActiveRecordForOwner(ownerKey);
-      if (freshExisting && env.MAX_ACTIVE_CHANNELS_PER_OWNER <= 1) {
-        await this.ts3.moveClient(clientId, freshExisting.channelId);
-        logger.info({ event, source, clientId, channelId: freshExisting.channelId, ownerKey }, 'Temp channel owner moved');
-        await this.sendTempPassword(clientId, freshExisting.channelId, freshExisting.password);
-        logger.info({ event, source, clientId, channelId: freshExisting.channelId, ownerKey }, 'Persian temp channel reuse message sent');
-        logger.info({ event, source, clientId, channelId: freshExisting.channelId, ownerKey }, 'Temp channel reused and client moved');
+        await this.ts3.moveClient(clientId, existing.channelId);
+        await this.ts3.sendPrivateMessage(clientId, persianMessages.tempReused({ channelName: existing.channelName, password: existing.password ?? '' }));
+        logger.info({ source, clientId, channelId: existing.channelId, ownerKey }, 'Temp channel reused and user moved');
         return;
       }
-      const password = makePassword();
+
+      const password = makeTempPassword();
       const channelName = roomName(event.nickname);
-      const rec = await this.create(ownerKey, channelName, password, { skipRateLimit: recoveredFromStaleMetadata });
-      await this.ts3.moveClient(clientId, rec.channelId);
-      logger.info({ event, source, clientId, channelId: rec.channelId, ownerKey }, 'Temp channel owner moved');
-      await this.ts3.setChannelPassword(rec.channelId, password);
-      await this.sendTempPassword(clientId, rec.channelId, password, channelName);
-      logger.info({ event, source, clientId, channelId: rec.channelId, ownerKey }, 'Persian temp channel creation message sent');
-      logger.info({ event, source, clientId, channelId: rec.channelId, channelName, ownerKey }, 'Temp channel created and client moved');
+      const record = await this.createManagedTempChannel(ownerKey, channelName, password, recovered);
+      await this.ts3.moveClient(clientId, record.channelId);
+      logger.info({ source, clientId, channelId: record.channelId, ownerKey }, 'User moved to temp channel');
+      await this.ts3.setChannelPassword(record.channelId, password);
+      await this.repository.setManagedChannel({ ...record, password, lastSeenAt: Date.now() });
+      await this.ts3.sendPrivateMessage(clientId, persianMessages.tempCreated({ channelName, password }));
+      logger.info({ source, clientId, channelId: record.channelId, channelName, ownerKey }, 'Temp channel created');
     } catch (error) {
-      logger.error({ err: error, error, event, source, clientId, ownerKey, targetChannelId }, 'Failed temp channel flow with TeamSpeak error');
+      logger.error({ err: error, event, source, clientId, ownerKey, targetChannelId }, 'Failed temp channel flow');
+      if (clientId) await this.ts3.sendPrivateMessage(clientId, persianMessages.tempError()).catch(() => undefined);
     }
   }
 
-  private async sendTempPassword(clientId: string, channelId: string, password?: string, channelName?: string): Promise<void> {
-    if (!password) return;
-    await this.ts3.sendPrivateMessage(clientId, `کانال موقت شما ساخته شد ✅\nنام کانال: ${channelName ?? channelId}\nرمز ورود: ${password}\n\nتا زمانی که داخل کانال باشید فعال می‌ماند.\nاگر کانال چند دقیقه خالی بماند، به‌صورت خودکار حذف می‌شود.`);
+  private async removeStaleMetadata(ownerKey: string): Promise<boolean> {
+    const existing = await this.repository.getByOwner('temp', ownerKey);
+    if (!existing) return false;
+    if (await this.ts3.channelExists(existing.channelId)) return false;
+    logger.warn({ channelId: existing.channelId, ownerKey }, 'Removing stale temp channel metadata');
+    await this.repository.deleteRecord(existing);
+    await this.store.del(this.rateKey(ownerKey), this.lockKey(ownerKey));
+    return true;
   }
 
-  async create(ownerKey: string, rawName: string, password?: string, options: { skipRateLimit?: boolean } = {}): Promise<TempChannelRecord> {
-    const name = sanitizeChannelName(rawName, 40);
-    if (this.blacklist.hasBlacklistedTerm(name)) throw new Error('Channel name contains blacklisted term');
-    const rateKey = this.rateKey(ownerKey);
-    if (!options.skipRateLimit) {
-      const current = await this.store.incr(rateKey);
-      if (current === 1) await this.store.expire(rateKey, env.RATE_LIMIT_WINDOW_SEC);
-      if (current > 1) { logger.warn({ ownerKey, rateKey }, 'Temp channel creation rate limited / spam detected'); throw new Error('Rate limit exceeded'); }
+  private async createManagedTempChannel(ownerKey: string, rawName: string, password: string, skipRateLimit: boolean): Promise<ManagedChannelRecord> {
+    const channelName = sanitizeChannelName(rawName, 40);
+    if (this.blacklist.hasBlacklistedTerm(channelName)) throw new Error('Channel name contains blacklisted term');
+    if (!/^\d{4}$/.test(password)) throw new Error('Temporary channel password must be exactly 4 digits');
+    if (!skipRateLimit) {
+      const current = await this.store.incr(this.rateKey(ownerKey));
+      if (current === 1) await this.store.expire(this.rateKey(ownerKey), env.RATE_LIMIT_WINDOW_SEC);
+      if (current > 1) { logger.warn({ ownerKey }, 'Temp channel creation rate limited'); throw new Error('Rate limit exceeded'); }
     }
-    const activeChannel = await this.store.get(this.ownerKey(ownerKey));
-    if (activeChannel && env.MAX_ACTIVE_CHANNELS_PER_OWNER <= 1) { logger.info({ ownerKey, activeChannel }, 'Temp channel creation skipped because user already has active channel'); throw new Error('Owner already has active channel'); }
-    if (password && !/^\d{4}$/.test(password)) throw new Error('Temporary channel password must be exactly 4 digits');
-    const channelId = await this.ts3.createTempChannel({ name, parentId: env.TS3_PARENT_CHANNEL_ID, topic: botMarker('temp'), description: botMarker('temp') });
-    const rec: TempChannelRecord = { channelId, ownerKey, createdAt: Date.now(), lastEmptyAt: 0, kind: 'temp', password };
-    await this.store.set(this.ownerKey(ownerKey), channelId);
-    await this.store.hset(this.channelKey(channelId), { ownerKey, channelId, password: password ?? '', createdAt: String(rec.createdAt), lastSeenAt: String(rec.createdAt), lastEmptyAt: '0', kind: rec.kind, type: rec.kind });
-    await this.store.sadd(TMP_SET, channelId);
+    const channelId = await this.ts3.createTempChannel({ name: channelName, parentId: env.TS3_PARENT_CHANNEL_ID, topic: TEMP_MARKER, description: TEMP_MARKER });
+    const now = Date.now();
+    const record: ManagedChannelRecord = { type: 'temp', ownerKey, channelId, channelName, password, createdAt: now, lastSeenAt: now, marker: TEMP_MARKER, version: '1' };
+    await this.repository.setManagedChannel(record);
     this.metrics.createdChannels += 1;
-    return rec;
+    return record;
   }
 
-  async listActive(): Promise<TempChannelRecord[]> {
-    const ids = await this.store.smembers(TMP_SET);
-    const rows = await Promise.all(ids.map((id) => this.store.hgetall(this.channelKey(id))));
-    return rows.map((row, i) => ({ channelId: row.channelId || ids[i], ownerKey: row.ownerKey, createdAt: Number(row.createdAt), lastEmptyAt: Number(row.lastEmptyAt ?? 0), kind: ((row.kind || row.type) as 'temp' | 'ticket') ?? 'temp', password: row.password })).filter((r) => r.ownerKey);
+  async create(ownerKey: string, rawName: string, password = makeTempPassword()): Promise<TempChannelRecord> {
+    const record = await this.createManagedTempChannel(ownerKey, rawName, password, false);
+    return this.toLegacy(record);
   }
+
+  async listActive(): Promise<TempChannelRecord[]> { return (await this.repository.listManagedChannels()).map((record) => this.toLegacy(record)); }
 
   async close(channelId: string): Promise<void> {
-    const row = await this.store.hgetall(this.channelKey(channelId));
-    if (!row.ownerKey || !['temp', 'ticket'].includes(row.kind || row.type)) throw new Error('Refusing to delete unmanaged channel');
-    await this.ts3.deleteChannel(channelId);
-    await this.removeMetadata(channelId, row.ownerKey);
+    const record = await this.repository.findByChannelId(channelId);
+    if (!record) throw new Error('Refusing to delete unmanaged channel');
+    if (await this.ts3.channelExists(channelId)) await this.ts3.deleteChannel(channelId);
+    await this.repository.deleteRecord(record);
     this.metrics.deletedChannels += 1;
   }
 
-  private async removeMetadata(channelId: string, ownerKey: string): Promise<void> {
-    await this.store.srem(TMP_SET, channelId);
-    await this.store.del(this.channelKey(channelId));
-    await this.store.del(this.ownerKey(ownerKey));
-  }
-
-  async markEmpty(channelId: string): Promise<void> { await this.store.hset(this.channelKey(channelId), { lastEmptyAt: String(Date.now()) }); }
-  async markOccupied(channelId: string): Promise<void> { await this.store.hset(this.channelKey(channelId), { lastEmptyAt: '0', lastSeenAt: String(Date.now()) }); }
-
   async cleanupEmptyChannels(): Promise<number> {
-    const active = await this.listActive();
+    const active = await this.repository.listManagedChannels();
     let deleted = 0;
     logger.debug({ count: active.length }, 'Scanning managed channels for empty cleanup');
-    for (const rec of active) {
+    for (const record of active) {
       try {
-        const count = await this.ts3.getChannelClientCount(rec.channelId);
+        if (!(await this.ts3.channelExists(record.channelId))) { await this.repository.deleteRecord(record); logger.warn({ channelId: record.channelId }, 'Removed metadata for missing managed channel'); continue; }
+        const count = await this.ts3.getChannelClientCount(record.channelId);
         if (count === 0) {
-          const lastEmptyAt = rec.lastEmptyAt || Date.now();
-          if (!rec.lastEmptyAt) { await this.markEmpty(rec.channelId); logger.debug({ channelId: rec.channelId, kind: rec.kind }, 'Managed channel marked empty'); }
-          if (Date.now() - lastEmptyAt >= env.EMPTY_DELETE_DELAY_SEC * 1000) { await this.close(rec.channelId); deleted += 1; logger.info({ channelId: rec.channelId, kind: rec.kind }, 'Deleted empty managed channel'); }
-        } else if (rec.lastEmptyAt > 0) { await this.markOccupied(rec.channelId); logger.info({ channelId: rec.channelId, kind: rec.kind }, 'Cancelled managed channel deletion because it is occupied again'); }
-      } catch (error) { logger.warn({ err: error, error, channelId: rec.channelId, kind: rec.kind }, 'Failed cleanup for managed channel'); }
+          const emptySince = record.emptySince ?? Date.now();
+          if (!record.emptySince) await this.repository.markEmpty(record.channelId);
+          if (Date.now() - emptySince >= env.EMPTY_DELETE_DELAY_SEC * 1000) { await this.close(record.channelId); deleted += 1; logger.info({ channelId: record.channelId, type: record.type }, 'Deleted empty managed channel'); }
+        } else if (record.emptySince) { await this.repository.clearEmpty(record.channelId); logger.info({ channelId: record.channelId, type: record.type }, 'Cancelled managed channel deletion because channel is occupied'); }
+      } catch (error) { logger.warn({ err: error, channelId: record.channelId, type: record.type }, 'Managed channel cleanup failed'); }
     }
     return deleted;
   }
 
-  async cleanupOrphans(): Promise<number> {
-    const active = await this.listActive(); let removed = 0;
-    for (const rec of active) { const ownerMapping = await this.store.get(this.ownerKey(rec.ownerKey)); if (ownerMapping !== rec.channelId) { await this.close(rec.channelId); removed += 1; } }
-    return removed;
-  }
+  async cleanupOrphans(): Promise<number> { return 0; }
 
-  async getActiveChannelForOwner(ownerKey: string): Promise<string | null> { return this.store.get(this.ownerKey(ownerKey)); }
-  async getActiveRecordForOwner(ownerKey: string): Promise<TempChannelRecord | null> { const channelId = await this.getActiveChannelForOwner(ownerKey); if (!channelId) return null; const row = await this.store.hgetall(this.channelKey(channelId)); return { channelId, ownerKey, createdAt: Number(row.createdAt), lastEmptyAt: Number(row.lastEmptyAt ?? 0), kind: ((row.kind || row.type) as 'temp' | 'ticket') ?? 'temp', password: row.password }; }
-
-  async attachTicketChannel(ownerKey: string, channelId: string): Promise<void> {
-    const createdAt = Date.now();
-    await this.store.set(this.ownerKey(ownerKey), channelId);
-    await this.store.hset(this.channelKey(channelId), { ownerKey, channelId, createdAt: String(createdAt), lastSeenAt: String(createdAt), lastEmptyAt: '0', kind: 'ticket', type: 'ticket' });
-    await this.store.sadd(TMP_SET, channelId);
-    this.metrics.activeTickets += 1; this.metrics.createdChannels += 1;
-  }
+  async getActiveChannelForOwner(ownerKey: string): Promise<string | null> { return (await this.repository.getByOwner('ticket', ownerKey))?.channelId ?? (await this.repository.getByOwner('temp', ownerKey))?.channelId ?? null; }
+  async getActiveRecordForOwner(ownerKey: string): Promise<TempChannelRecord | null> { const record = await this.repository.getByOwner('temp', ownerKey); return record ? this.toLegacy(record) : null; }
+  async attachTicketChannel(ownerKey: string, channelId: string, channelName = channelId): Promise<void> { const now = Date.now(); await this.repository.setManagedChannel({ type: 'ticket', ownerKey, channelId, channelName, createdAt: now, lastSeenAt: now, marker: '[TICKET_CH] managed-by-bot', version: '1' }); this.metrics.activeTickets += 1; this.metrics.createdChannels += 1; }
+  private toLegacy(record: ManagedChannelRecord): TempChannelRecord { return { channelId: record.channelId, ownerKey: record.ownerKey, createdAt: record.createdAt, lastEmptyAt: record.emptySince ?? 0, kind: record.type, password: record.password }; }
 }
