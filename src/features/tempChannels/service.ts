@@ -82,15 +82,20 @@ export class TempChannelService {
       const password = makeTempPassword();
       const channelName = roomName(event.nickname);
       const record = await this.createManagedTempChannel(ownerKey, channelName, password, recovered);
-      await this.ts3.verifyChannelPasswordFlag(record.channelId);
-      await this.repository.setManagedChannel({ ...record, password, lastSeenAt: Date.now() });
-      await this.ts3.moveClient(clientId, record.channelId);
+      try {
+        await this.ts3.moveClient(clientId, record.channelId);
+      } catch (error) {
+        await this.cleanupFailedCreate(record, ownerKey);
+        throw error;
+      }
       logger.info({ source, clientId, channelId: record.channelId, ownerKey }, 'User moved to temp channel');
       await this.ts3.sendPrivateMessage(clientId, persianMessages.tempCreated({ channelName, password }));
       logger.info({ source, clientId, channelId: record.channelId, channelName, ownerKey }, 'Temp channel created');
     } catch (error) {
       logger.error({ err: error, event, source, clientId, ownerKey, targetChannelId }, 'Failed temp channel flow');
-      if (clientId) await this.ts3.sendPrivateMessage(clientId, persianMessages.tempError()).catch(() => undefined);
+      if (source === 'event' && clientId) await this.ts3.sendPrivateMessage(clientId, persianMessages.tempError()).catch(() => undefined);
+    } finally {
+      await this.store.del(this.lockKey(ownerKey));
     }
   }
 
@@ -113,12 +118,26 @@ export class TempChannelService {
       if (current === 1) await this.store.expire(this.rateKey(ownerKey), env.RATE_LIMIT_WINDOW_SEC);
       if (current > 1) { logger.warn({ ownerKey }, 'Temp channel creation rate limited'); throw new Error('Rate limit exceeded'); }
     }
-    const channelId = await this.ts3.createTempChannel({ name: channelName, parentId: env.TS3_PARENT_CHANNEL_ID, password, topic: TEMP_MARKER, description: TEMP_MARKER });
-    const now = Date.now();
-    const record: ManagedChannelRecord = { type: 'temp', ownerKey, channelId, channelName, password, createdAt: now, lastSeenAt: now, marker: TEMP_MARKER, version: '1' };
-    await this.repository.setManagedChannel(record);
-    this.metrics.createdChannels += 1;
-    return record;
+    let channelId: string | undefined;
+    try {
+      channelId = await this.ts3.createTempChannel({ name: channelName, parentId: env.TS3_PARENT_CHANNEL_ID, password, topic: TEMP_MARKER, description: TEMP_MARKER });
+      const now = Date.now();
+      const record: ManagedChannelRecord = { type: 'temp', ownerKey, channelId, channelName, password, createdAt: now, lastSeenAt: now, marker: TEMP_MARKER, version: '1' };
+      await this.repository.setManagedChannel(record);
+      this.metrics.createdChannels += 1;
+      return record;
+    } catch (error) {
+      if (channelId) await this.cleanupFailedCreate({ type: 'temp', ownerKey, channelId, channelName, password, createdAt: Date.now(), lastSeenAt: Date.now(), marker: TEMP_MARKER, version: '1' }, ownerKey);
+      else await this.store.del(this.rateKey(ownerKey), this.lockKey(ownerKey));
+      throw error;
+    }
+  }
+
+  private async cleanupFailedCreate(record: ManagedChannelRecord, ownerKey: string): Promise<void> {
+    logger.warn({ channelId: record.channelId, ownerKey }, 'Cleaning up failed temp channel creation');
+    await this.ts3.deleteChannel(record.channelId).catch((error) => logger.warn({ err: error, channelId: record.channelId }, 'Failed to delete partially created temp channel'));
+    await this.repository.deleteRecord(record).catch((error) => logger.warn({ err: error, channelId: record.channelId }, 'Failed to delete partially created temp metadata'));
+    await this.store.del(this.rateKey(ownerKey), this.lockKey(ownerKey));
   }
 
   async create(ownerKey: string, rawName: string, password = makeTempPassword()): Promise<TempChannelRecord> {
