@@ -1,4 +1,6 @@
+import { randomInt } from 'node:crypto';
 import { env } from '../../config/env';
+import { featureFlags } from '../../config/featureFlags';
 import { logger } from '../../config/logger';
 import { EventBus } from '../../core/eventBus';
 import { Metrics } from '../../core/metrics';
@@ -12,7 +14,7 @@ import { BlacklistService } from '../moderation/blacklist';
 const normalizeId = (value: unknown): string => String(value ?? '').trim();
 const TEMP_MARKER = '[TEMP_CH] managed-by-bot';
 export const selectOwnerKey = (clientDbId?: string, clientId?: string): string => normalizeId(clientDbId) || normalizeId(clientId);
-export const makeTempPassword = (): string => String(Math.floor(1000 + Math.random() * 9000));
+export const makeTempPassword = (): string => String(randomInt(1000, 10000));
 const roomName = (nickname?: string): string => sanitizeChannelName(`${nickname?.trim() || 'User'}'s room`, 40);
 
 export interface TempChannelRecord {
@@ -41,11 +43,15 @@ export class TempChannelService {
   private lockKey(ownerKey: string) { return `managed:lock:temp:${ownerKey}`; }
 
   init(isLeader: () => boolean): void {
+    if (!featureFlags.tempChannelLifecycle) {
+      logger.info('Temp channel lifecycle feature is disabled; handlers were not registered');
+      return;
+    }
     this.bus?.on('clientmoved', async (event) => this.handleClientMoved(event, isLeader, 'event'));
   }
 
   async processWaitingLobbyClients(isLeader: () => boolean): Promise<void> {
-    if (!isLeader()) return;
+    if (!featureFlags.tempChannelLifecycle || !isLeader()) return;
     for (const tempLobbyChannelId of env.TEMP_LOBBY_CHANNEL_IDS) {
       const clients = await this.ts3.listClientsInChannel(tempLobbyChannelId);
       logger.debug({ tempLobbyChannelId, clientCount: clients.length }, 'Scanned temp lobby for waiting clients');
@@ -76,10 +82,10 @@ export class TempChannelService {
       const password = makeTempPassword();
       const channelName = roomName(event.nickname);
       const record = await this.createManagedTempChannel(ownerKey, channelName, password, recovered);
+      await this.ts3.verifyChannelPasswordFlag(record.channelId);
+      await this.repository.setManagedChannel({ ...record, password, lastSeenAt: Date.now() });
       await this.ts3.moveClient(clientId, record.channelId);
       logger.info({ source, clientId, channelId: record.channelId, ownerKey }, 'User moved to temp channel');
-      await this.ts3.setChannelPassword(record.channelId, password);
-      await this.repository.setManagedChannel({ ...record, password, lastSeenAt: Date.now() });
       await this.ts3.sendPrivateMessage(clientId, persianMessages.tempCreated({ channelName, password }));
       logger.info({ source, clientId, channelId: record.channelId, channelName, ownerKey }, 'Temp channel created');
     } catch (error) {
@@ -107,7 +113,7 @@ export class TempChannelService {
       if (current === 1) await this.store.expire(this.rateKey(ownerKey), env.RATE_LIMIT_WINDOW_SEC);
       if (current > 1) { logger.warn({ ownerKey }, 'Temp channel creation rate limited'); throw new Error('Rate limit exceeded'); }
     }
-    const channelId = await this.ts3.createTempChannel({ name: channelName, parentId: env.TS3_PARENT_CHANNEL_ID, topic: TEMP_MARKER, description: TEMP_MARKER });
+    const channelId = await this.ts3.createTempChannel({ name: channelName, parentId: env.TS3_PARENT_CHANNEL_ID, password, topic: TEMP_MARKER, description: TEMP_MARKER });
     const now = Date.now();
     const record: ManagedChannelRecord = { type: 'temp', ownerKey, channelId, channelName, password, createdAt: now, lastSeenAt: now, marker: TEMP_MARKER, version: '1' };
     await this.repository.setManagedChannel(record);
@@ -116,6 +122,7 @@ export class TempChannelService {
   }
 
   async create(ownerKey: string, rawName: string, password = makeTempPassword()): Promise<TempChannelRecord> {
+    if (!featureFlags.tempChannelLifecycle) throw new Error('Temp channel lifecycle feature is disabled');
     const record = await this.createManagedTempChannel(ownerKey, rawName, password, false);
     return this.toLegacy(record);
   }
@@ -131,6 +138,7 @@ export class TempChannelService {
   }
 
   async cleanupEmptyChannels(): Promise<number> {
+    if (!featureFlags.automationRecovery && !featureFlags.tempChannelLifecycle) return 0;
     const active = await this.repository.listManagedChannels();
     let deleted = 0;
     logger.debug({ count: active.length }, 'Scanning managed channels for empty cleanup');

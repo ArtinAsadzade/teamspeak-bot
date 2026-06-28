@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { env } from '../../config/env';
+import { featureFlags } from '../../config/featureFlags';
 import { logger } from '../../config/logger';
 import { EventBus } from '../../core/eventBus';
 import { KVStore } from '../../core/store';
@@ -16,10 +17,10 @@ export class TicketService {
 
   private lockKey(ownerKey: string) { return `managed:lock:ticket:${ownerKey}`; }
 
-  init(isLeader: () => boolean): void { this.bus.on('clientmoved', async (event) => this.handleClientMoved(event, isLeader, 'event')); }
+  init(isLeader: () => boolean): void { if (!featureFlags.supportTickets) { logger.info('Support tickets feature is disabled; handlers were not registered'); return; } this.bus.on('clientmoved', async (event) => this.handleClientMoved(event, isLeader, 'event')); }
 
   async processWaitingLobbyClients(isLeader: () => boolean): Promise<void> {
-    if (!isLeader()) return;
+    if (!featureFlags.supportTickets || !isLeader()) return;
     for (const supportLobbyChannelId of env.SUPPORT_LOBBY_CHANNEL_IDS) {
       const clients = await this.ts3.listClientsInChannel(supportLobbyChannelId);
       logger.debug({ supportLobbyChannelId, clientCount: clients.length }, 'Scanned support lobby for waiting clients');

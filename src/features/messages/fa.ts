@@ -8,5 +8,7 @@ export const persianMessages = {
   ticketReused: () => 'تیکت پشتیبانی قبلی شما آماده است ✅\nلطفاً همین‌جا منتظر بمانید تا پشتیبانی وارد شود.',
   ticketError: () => 'ساخت تیکت پشتیبانی با خطا روبه‌رو شد. لطفاً چند لحظه بعد دوباره تلاش کنید.',
   staffTicketNotification: (input: { nickname: string; channelName: string }) =>
-    `تیکت جدید ساخته شد:\nکاربر: ${input.nickname}\nکانال: ${input.channelName}`
+    `تیکت جدید ساخته شد:\nکاربر: ${input.nickname}\nکانال: ${input.channelName}`,
+  tempPasswordVerificationFailed: () => 'تنظیم رمز کانال با خطا روبه‌رو شد. لطفاً چند لحظه بعد دوباره تلاش کنید.',
+  adminFeatureDisabled: () => 'این بخش در حال حاضر غیرفعال است.'
 };

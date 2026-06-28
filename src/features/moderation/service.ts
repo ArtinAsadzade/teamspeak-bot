@@ -1,4 +1,5 @@
 import { env } from '../../config/env';
+import { featureFlags } from '../../config/featureFlags';
 import { logger } from '../../config/logger';
 import { EventBus } from '../../core/eventBus';
 import { KVStore } from '../../core/store';
@@ -9,6 +10,10 @@ export class ModerationService {
   constructor(private readonly bus: EventBus, private readonly store: KVStore) {}
 
   init(): void {
+    if (!featureFlags.antiSpamSecurity) {
+      logger.info('Anti-spam security feature is disabled; handlers were not registered');
+      return;
+    }
     this.bus.on('clientmoved', async (event) => {
       const key = `spam:switch:${event.clientDbId}`;
       const count = await this.store.incr(key);

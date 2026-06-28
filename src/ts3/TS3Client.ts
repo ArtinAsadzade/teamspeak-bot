@@ -181,11 +181,13 @@ export class TS3Client {
       channelTopic: input.topic,
       channelDescription: input.description,
       channelFlagPermanent: false,
-      channelFlagSemiPermanent: true
+      channelFlagSemiPermanent: true,
+      ...(input.password ? { channelPassword: input.password } : {})
     });
     const channelId = String(created.cid);
     logger.info({ channelId, channelName: input.name }, 'Temp channel created');
     const info = await this.getChannelInfo(channelId);
+    if (input.password) await this.verifyChannelPasswordFlag(channelId);
     logger.info({ channelId, channelName: info?.channelName ?? input.name, channelFlagPassword: Boolean(info?.channelFlagPassword) }, 'Temp channel created and password status verified');
     return channelId;
   }
