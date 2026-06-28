@@ -3,6 +3,16 @@ import { z } from 'zod';
 
 dotenv.config();
 
+const parseFeatureFlag = (value: string | undefined, defaultValue: boolean): boolean => {
+  if (value === undefined || value.trim() === '') {
+    return defaultValue;
+  }
+
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+};
+
+const featureFlagSchema = (defaultValue: boolean) => z.string().optional().transform((value) => parseFeatureFlag(value, defaultValue));
+
 const parseIdList = (multi?: string, single?: string): string[] => {
   const source = multi?.trim() ? multi : single;
   return (source ?? '')
@@ -37,7 +47,18 @@ const schema = z.object({
   SCHEDULER_TICK_SEC: z.coerce.number().int().min(5).default(10),
   LEADER_LOCK_TTL_SEC: z.coerce.number().int().min(5).default(15),
   SPAM_WINDOW_SEC: z.coerce.number().int().min(1).default(10),
-  SPAM_SWITCH_THRESHOLD: z.coerce.number().int().min(2).default(4)
+  SPAM_SWITCH_THRESHOLD: z.coerce.number().int().min(2).default(4),
+  FEATURE_TEMP_CHANNEL_LIFECYCLE: featureFlagSchema(true),
+  FEATURE_TEMP_CHANNEL_OWNER_CONTROLS: featureFlagSchema(false),
+  FEATURE_SUPPORT_TICKETS: featureFlagSchema(true),
+  FEATURE_ADMIN_API: featureFlagSchema(true),
+  FEATURE_ANTI_SPAM_SECURITY: featureFlagSchema(true),
+  FEATURE_AUTOMATION_RECOVERY: featureFlagSchema(true),
+  FEATURE_WELCOME_AND_RULES: featureFlagSchema(false),
+  FEATURE_AFK_SYSTEM: featureFlagSchema(false),
+  FEATURE_VIP_SYSTEM: featureFlagSchema(false),
+  FEATURE_DAILY_ADMIN_STATS: featureFlagSchema(false),
+  FEATURE_STAFF_AUDIT_LOG: featureFlagSchema(false)
 }).transform((data) => {
   const supportLobbyChannelIds = parseIdList(data.SUPPORT_LOBBY_CHANNEL_IDS, data.SUPPORT_LOBBY_CHANNEL_ID);
   const tempLobbyChannelIds = parseIdList(data.TEMP_LOBBY_CHANNEL_IDS, data.TEMP_LOBBY_CHANNEL_ID);
