@@ -1,5 +1,6 @@
 import { buildApiServer } from './api/server';
 import { env } from './config/env';
+import { featureFlags } from './config/featureFlags';
 import { logger } from './config/logger';
 import { EventBus } from './core/eventBus';
 import { LeaderElection } from './core/leaderElection';
@@ -45,15 +46,19 @@ async function bootstrap(): Promise<void> {
   scheduler.everyTick('leader-election', async () => {
     await leader.tick();
   });
-  scheduler.everyTick('support-lobby-ticket-scan', async () => {
-    if (!leader.isLeader()) return;
-    await tickets.processWaitingLobbyClients(() => leader.isLeader());
-    await tempChannels.processWaitingLobbyClients(() => leader.isLeader());
-  });
-  scheduler.everyTick('cleanup-empty-channels', async () => {
-    if (!leader.isLeader()) return;
-    await tempChannels.cleanupEmptyChannels();
-  });
+  if (featureFlags.supportTickets || featureFlags.tempChannelLifecycle) {
+    scheduler.everyTick('lobby-scan', async () => {
+      if (!leader.isLeader()) return;
+      if (featureFlags.supportTickets) await tickets.processWaitingLobbyClients(() => leader.isLeader());
+      if (featureFlags.tempChannelLifecycle) await tempChannels.processWaitingLobbyClients(() => leader.isLeader());
+    });
+  }
+  if (featureFlags.automationRecovery || featureFlags.tempChannelLifecycle || featureFlags.supportTickets) {
+    scheduler.everyTick('cleanup-empty-channels', async () => {
+      if (!leader.isLeader()) return;
+      await tempChannels.cleanupEmptyChannels();
+    });
+  }
 
   const app = await buildApiServer({
     tempChannels,

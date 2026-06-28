@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { z } from 'zod';
+import { parseCommaSeparatedChannelIds, toChannelIdSet } from './channelIds';
 
 dotenv.config();
 
@@ -12,14 +13,6 @@ const parseFeatureFlag = (value: string | undefined, defaultValue: boolean): boo
 };
 
 const featureFlagSchema = (defaultValue: boolean) => z.string().optional().transform((value) => parseFeatureFlag(value, defaultValue));
-
-const parseIdList = (multi?: string, single?: string): string[] => {
-  const source = multi?.trim() ? multi : single;
-  return (source ?? '')
-    .split(',')
-    .map((value) => String(value).trim())
-    .filter(Boolean);
-};
 
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -60,22 +53,22 @@ const schema = z.object({
   FEATURE_DAILY_ADMIN_STATS: featureFlagSchema(false),
   FEATURE_STAFF_AUDIT_LOG: featureFlagSchema(false)
 }).transform((data) => {
-  const supportLobbyChannelIds = parseIdList(data.SUPPORT_LOBBY_CHANNEL_IDS, data.SUPPORT_LOBBY_CHANNEL_ID);
-  const tempLobbyChannelIds = parseIdList(data.TEMP_LOBBY_CHANNEL_IDS, data.TEMP_LOBBY_CHANNEL_ID);
+  const supportLobbyChannelIds = parseCommaSeparatedChannelIds(data.SUPPORT_LOBBY_CHANNEL_IDS, data.SUPPORT_LOBBY_CHANNEL_ID);
+  const tempLobbyChannelIds = parseCommaSeparatedChannelIds(data.TEMP_LOBBY_CHANNEL_IDS, data.TEMP_LOBBY_CHANNEL_ID);
   return {
     ...data,
     SUPPORT_LOBBY_CHANNEL_ID: supportLobbyChannelIds[0] ?? '',
     SUPPORT_LOBBY_CHANNEL_IDS: supportLobbyChannelIds,
-    SUPPORT_LOBBY_CHANNEL_ID_SET: new Set<string>(supportLobbyChannelIds),
+    SUPPORT_LOBBY_CHANNEL_ID_SET: toChannelIdSet(supportLobbyChannelIds),
     TEMP_LOBBY_CHANNEL_ID: tempLobbyChannelIds[0] ?? '',
     TEMP_LOBBY_CHANNEL_IDS: tempLobbyChannelIds,
-    TEMP_LOBBY_CHANNEL_ID_SET: new Set<string>(tempLobbyChannelIds)
+    TEMP_LOBBY_CHANNEL_ID_SET: toChannelIdSet(tempLobbyChannelIds)
   };
 }).superRefine((data, ctx) => {
-  if (data.SUPPORT_LOBBY_CHANNEL_IDS.length === 0) {
+  if (data.FEATURE_SUPPORT_TICKETS && data.SUPPORT_LOBBY_CHANNEL_IDS.length === 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['SUPPORT_LOBBY_CHANNEL_IDS'], message: 'At least one support lobby channel ID is required' });
   }
-  if (data.TEMP_LOBBY_CHANNEL_IDS.length === 0) {
+  if (data.FEATURE_TEMP_CHANNEL_LIFECYCLE && data.TEMP_LOBBY_CHANNEL_IDS.length === 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['TEMP_LOBBY_CHANNEL_IDS'], message: 'At least one temp lobby channel ID is required' });
   }
 });
