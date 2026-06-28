@@ -37,7 +37,7 @@ async function bootstrap(): Promise<void> {
   const moderation = new ModerationService(eventBus, store);
   moderation.init();
 
-  const tickets = new TicketService(eventBus, tempChannels, ts3);
+  const tickets = new TicketService(eventBus, tempChannels, ts3, store);
   tickets.init(() => leader.isLeader());
   tempChannels.init(() => leader.isLeader());
 
