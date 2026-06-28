@@ -15,6 +15,12 @@ const getTeamSpeakErrorId = (error: unknown): string => {
 
 const isInvalidChannelIdError = (error: unknown): boolean => getTeamSpeakErrorId(error) === '768';
 
+export interface ChannelPasswordVerification {
+  verified: boolean;
+  reported: boolean;
+  channelExists: boolean;
+}
+
 export interface TS3ChannelClient {
   clientId: string;
   clientDbId: string;
@@ -181,15 +187,26 @@ export class TS3Client {
       channelTopic: input.topic,
       channelDescription: input.description,
       channelFlagPermanent: false,
-      channelFlagSemiPermanent: true,
-      ...(input.password ? { channelPassword: input.password } : {})
+      channelFlagSemiPermanent: true
     });
     const channelId = String(created.cid);
     logger.info({ channelId, channelName: input.name }, 'Temp channel created');
-    const info = await this.getChannelInfo(channelId);
-    if (input.password) await this.verifyChannelPasswordFlag(channelId);
-    logger.info({ channelId, channelName: info?.channelName ?? input.name, channelFlagPassword: Boolean(info?.channelFlagPassword) }, 'Temp channel created and password status verified');
-    return channelId;
+    try {
+      if (input.password) {
+        await this.ts3.channelEdit(channelId, { channelPassword: input.password });
+        await this.verifyChannelPasswordFlag(channelId);
+      }
+      const info = await this.getChannelInfo(channelId).catch((error) => {
+        logger.warn({ err: error, channelId }, 'Could not read temp channel info after password step; continuing');
+        return undefined;
+      });
+      logger.info({ channelId, channelName: info?.channelName ?? input.name, channelFlagPassword: Boolean(info?.channelFlagPassword) }, 'Temp channel created and password status checked');
+      return channelId;
+    } catch (error) {
+      logger.warn({ err: error, channelId }, 'Deleting temp channel after creation step failed');
+      await this.deleteChannel(channelId).catch((deleteError) => logger.warn({ err: deleteError, channelId }, 'Failed to delete temp channel after creation step failed'));
+      throw error;
+    }
   }
 
   async createTicketChannel(input: { name: string; parentId: string; topic?: string; description?: string }): Promise<string> {
@@ -213,10 +230,30 @@ export class TS3Client {
     await this.verifyChannelPasswordFlag(channelId);
   }
 
-  async verifyChannelPasswordFlag(channelId: string): Promise<void> {
-    const info = await this.getChannelInfo(channelId);
-    if (!info?.channelFlagPassword) throw new Error(`TeamSpeak did not report password flag for channel ${channelId}`);
-    logger.info({ channelId, channelName: info.channelName, channelFlagPassword: true }, 'Channel password flag verified');
+  async verifyChannelPasswordFlag(channelId: string): Promise<ChannelPasswordVerification> {
+    let info: ChannelInfo;
+    try {
+      info = await this.getChannelInfo(channelId);
+    } catch (error) {
+      const channelExists = !isInvalidChannelIdError(error);
+      logger.warn({ err: error, channelId, channelExists }, 'Cannot verify channel password flag; continuing without password flag verification');
+      return { verified: false, reported: false, channelExists };
+    }
+
+    const rawFlag = (info as any).channelFlagPassword ?? (info as any).channel_flag_password;
+    const reported = rawFlag !== undefined && rawFlag !== null && rawFlag !== '';
+    if (!reported) {
+      logger.warn({ channelId, channelName: info.channelName }, 'TeamSpeak did not report channelFlagPassword; continuing without password flag verification');
+      return { verified: false, reported: false, channelExists: true };
+    }
+
+    const verified = rawFlag === true || rawFlag === 1 || rawFlag === '1' || rawFlag === 'true';
+    if (verified) {
+      logger.info({ channelId, channelName: info.channelName, channelFlagPassword: true }, 'Channel password flag verified');
+    } else {
+      logger.warn({ channelId, channelName: info.channelName, channelFlagPassword: rawFlag }, 'TeamSpeak reported channelFlagPassword as disabled');
+    }
+    return { verified, reported: true, channelExists: true };
   }
 
   async getChannelInfo(channelId: string): Promise<ChannelInfo> {
